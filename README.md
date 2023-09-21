@@ -15,3 +15,5 @@ The training utilizes parallelized strategies in pytorch-lightning, utilizing ma
 
 Train the model by creating a configuration file and running `python train.py --logdir /path/to/logs --config /path/to/config.yaml0 --name experiment_name`
 
+To view training, use tensorboard via `tensorboard --logdir /path/to/logdir`. This shows all training losses as well as samples from the reverse sde during training
+
