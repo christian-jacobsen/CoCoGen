@@ -1,0 +1,37 @@
+model:
+  target: models.score_matching.DiffusionSDE
+  params:
+    lr: 1e-3
+    unet_config:
+      target: models.unets.UNET1
+      params:
+        in_channels: 1
+        n_feat: 256
+        pool_size: 4
+        data_size: 64
+        cond_size: 16
+    sde_config:
+      target: sdes.forward.VP
+      params:
+        beta_min: 1e-4
+        beta_max: 10
+    sampler_config:
+      target: sdes.backward.EulerMaruyama
+      params:
+        num_time_steps: 1000
+        eps: 1e-5
+
+data:
+  target: dataloaders.loaders.DarcyLoader
+  params:
+    data_dir: /home/csjacobs/git/diffusionPDE/datasets/Darcy_n16
+    batch_size: 64
+    num_workers: 8
+
+lightning:
+  trainer:
+    accelerator: gpu
+    strategy: ddp
+    devices: 2,3
+    precision: 16-mixed
+  epochs: 250
