@@ -53,8 +53,7 @@ def main():
             raise ValueError("Cannot find {}".format(known.resume))
         if os.path.isfile(known.resume):
             paths = known.resume.split("/")
-            logdir = "/".join(paths[:-4])
-            print(logdir)
+            logdir = "/".join(paths[:-2])
             ckpt = known.resume
         else:
             raise Exception('Not a checkpoint file to resume from: ', known.resume)
@@ -105,13 +104,15 @@ def main():
         },
     }
 
-    checkpoint_callback_0 = ModelCheckpoint(dirpath=osp.join(ckptdir), every_n_epochs=lightning_config.save_every_n_epochs, save_on_train_epoch_end=True)
+    checkpoint_callback_0 = ModelCheckpoint(dirpath=osp.join(ckptdir), every_n_epochs=lightning_config.save_every_n_epochs, save_on_train_epoch_end=True, filename="last")
     checkpoint_callback_1 = ModelCheckpoint(dirpath=osp.join(ckptdir), save_top_k=5, monitor="train/loss_epoch")
+    checkpoint_callback_1 = ModelCheckpoint(dirpath=osp.join(ckptdir), save_top_k=1, monitor="train/loss_epoch", filename="best")
 
     trainer_kwargs = dict()
     trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
     trainer_kwargs["callbacks"].append(checkpoint_callback_0)
     trainer_kwargs["callbacks"].append(checkpoint_callback_1)
+    trainer_kwargs["callbacks"].append(checkpoint_callback_2)
 
     torch.set_float32_matmul_precision('medium')
     
