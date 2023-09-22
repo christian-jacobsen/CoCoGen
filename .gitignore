@@ -4,3 +4,4 @@
 *datasets
 *.npz
 *old_code
+output*

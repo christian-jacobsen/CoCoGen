@@ -10,20 +10,23 @@ import os.path as osp
 import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
+from pytorch_lightning.utilities.rank_zero import rank_zero_only, rank_zero_info
 import torchvision
 from PIL import Image
+from omegaconf import OmegaConf
 
 class SetupCallback(Callback):
-    def __init__(self, resume, now, logdir, ckptdir, cfgdir, config, lightning_config):
+    def __init__(self, resume, now, logdir, ckptdir, cfgdir, model_config, lightning_config, trainer_config, data_config):
         super().__init__()
         self.resume = resume
         self.now = now
         self.logdir = logdir
         self.ckptdir = ckptdir
         self.cfgdir = cfgdir
-        self.config = config
+        self.model_config = model_config
         self.lightning_config = lightning_config
+        self.trainer_config = trainer_config
+        self.data_config = data_config
 
     def on_keyboard_interrupt(self, trainer, pl_module):
         if trainer.global_rank == 0:
@@ -31,7 +34,7 @@ class SetupCallback(Callback):
             ckpt_path = os.path.join(self.ckptdir, "last.ckpt")
             trainer.save_checkpoint(ckpt_path)
 
-    def on_pretrain_routine_start(self, trainer, pl_module):
+    def on_fit_start(self, trainer, pl_module):
         if trainer.global_rank == 0:
             # Create logdirs and save configs
             os.makedirs(self.logdir, exist_ok=True)
@@ -41,15 +44,25 @@ class SetupCallback(Callback):
             if "callbacks" in self.lightning_config:
                 if 'metrics_over_trainsteps_checkpoint' in self.lightning_config['callbacks']:
                     os.makedirs(os.path.join(self.ckptdir, 'trainstep_checkpoints'), exist_ok=True)
-            print("Project config")
-            print(OmegaConf.to_yaml(self.config))
-            OmegaConf.save(self.config,
-                           os.path.join(self.cfgdir, "{}-project.yaml".format(self.now)))
+            print("Model config")
+            print(OmegaConf.to_yaml(self.model_config))
+            OmegaConf.save(self.model_config,
+                           os.path.join(self.cfgdir, "{}-model.yaml".format(self.now)))
 
             print("Lightning config")
             print(OmegaConf.to_yaml(self.lightning_config))
             OmegaConf.save(OmegaConf.create({"lightning": self.lightning_config}),
                            os.path.join(self.cfgdir, "{}-lightning.yaml".format(self.now)))
+
+            print("Trainer config")
+            print(OmegaConf.to_yaml(self.trainer_config))
+            OmegaConf.save(self.trainer_config,
+                           os.path.join(self.cfgdir, "{}-trainer.yaml".format(self.now)))
+
+            print("Data config")
+            print(OmegaConf.to_yaml(self.data_config))
+            OmegaConf.save(self.data_config,
+                           os.path.join(self.cfgdir, "{}-data.yaml".format(self.now)))
 
         else:
             # ModelCheckpoint callback created log directory --- remove it
