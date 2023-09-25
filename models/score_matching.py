@@ -132,7 +132,7 @@ class DiffusionSDE(pl.LightningModule):
                 x_perturbed, _, _ = self.q_sample(x0=x0, t=t)
                 forward_row.append(x_perturbed)
 
-        log["diffusion_row"] = self._get_rows_from_list(forward_row)
+        #log["diffusion_row"] = self._get_rows_from_list(forward_row)
 
         # backward sampling (denoising)
         samples, intermediates = self.sample(batch_size=N)

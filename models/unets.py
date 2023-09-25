@@ -127,8 +127,8 @@ class UNET1(nn.Module):
 
         self.timeembed1 = EmbedFC(1, 2*n_feat)
         self.timeembed2 = EmbedFC(1, 1*n_feat)
-        self.contextembed1 = EmbedFC(16, 2*n_feat)
-        self.contextembed2 = EmbedFC(16, 1*n_feat)
+        self.contextembed1 = EmbedFC(self.cond_size, 2*n_feat)
+        self.contextembed2 = EmbedFC(self.cond_size, 1*n_feat)
 
         self.up0 = nn.Sequential(
             # nn.ConvTranspose2d(6 * n_feat, 2 * n_feat, 7, 7), # when concat temb and cemb end up w 6*n_feat

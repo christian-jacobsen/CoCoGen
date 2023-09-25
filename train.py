@@ -94,8 +94,8 @@ def main():
         "image_logger": {
             "target": "loggers.ImageLogger",
             "params": {
-                "batch_frequency": 750,
-                "max_images": 4,
+                "batch_frequency": lightning_config.sample_every_n_steps,
+                "max_images": 8,
                 "clamp": False
             }
         },
@@ -106,21 +106,22 @@ def main():
 
     checkpoint_callback_0 = ModelCheckpoint(dirpath=osp.join(ckptdir), every_n_epochs=lightning_config.save_every_n_epochs, save_on_train_epoch_end=True, filename="last")
     checkpoint_callback_1 = ModelCheckpoint(dirpath=osp.join(ckptdir), save_top_k=5, monitor="train/loss_epoch")
-    checkpoint_callback_1 = ModelCheckpoint(dirpath=osp.join(ckptdir), save_top_k=1, monitor="train/loss_epoch", filename="best")
 
     trainer_kwargs = dict()
     trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
     trainer_kwargs["callbacks"].append(checkpoint_callback_0)
     trainer_kwargs["callbacks"].append(checkpoint_callback_1)
-    trainer_kwargs["callbacks"].append(checkpoint_callback_2)
 
     torch.set_float32_matmul_precision('medium')
     
     # set the correct gpu devices
-    gpus = trainer_config.devices.split(',')
+    try:
+        gpus = trainer_config.devices.split(',')
+    except:
+        gpus = [str(trainer_config.devices)]
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = trainer_config.devices
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(trainer_config.devices)
     trainer = Trainer(max_epochs=lightning_config.epochs,
                       accelerator=trainer_config.accelerator,
                       strategy=trainer_config.strategy,

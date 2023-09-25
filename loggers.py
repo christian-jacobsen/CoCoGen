@@ -14,6 +14,7 @@ from pytorch_lightning.utilities.rank_zero import rank_zero_only, rank_zero_info
 import torchvision
 from PIL import Image
 from omegaconf import OmegaConf
+from utils import convert_to_rgb
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, model_config, lightning_config, trainer_config, data_config):
@@ -99,7 +100,7 @@ class ImageLogger(Callback):
     @rank_zero_only
     def _testtube(self, pl_module, images, batch_idx, split):
         for k in images:
-            grid = torchvision.utils.make_grid(images[k])
+            grid = torchvision.utils.make_grid(images[k], nrow=images[k].shape[0]//self.channels)
             #grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
 
             tag = f"{split}/{k}"
@@ -112,7 +113,7 @@ class ImageLogger(Callback):
                   global_step, current_epoch, batch_idx):
         root = os.path.join(save_dir, "images", split)
         for k in images:
-            grid = torchvision.utils.make_grid(images[k], nrow=4)
+            grid = torchvision.utils.make_grid(images[k], nrow=images[k].shape[0]//self.channels)
             '''
             if self.rescale:
                 grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
@@ -144,19 +145,33 @@ class ImageLogger(Callback):
             with torch.no_grad():
                 images = pl_module.log_images(batch, **self.log_images_kwargs)
 
+            all_images = {}
+
             for k in images:
+                self.channels = images[k].shape[1]
                 N = min(images[k].shape[0], self.max_images)
                 images[k] = images[k][:N]
-                if isinstance(images[k], torch.Tensor):
-                    images[k] = images[k].detach().cpu()
-                    if self.clamp:
-                        images[k] = torch.clamp(images[k], -1., 1.)
 
-            self.log_local(pl_module.logger.save_dir, split, images,
+                # extract each channel separately
+                all_images[k] = []
+                for channel in range(images[k].shape[1]):
+                    all_images[k].append(images[k][:, channel].unsqueeze(1))
+                all_images[k] = torch.cat(all_images[k], dim=0)
+                
+                if isinstance(all_images[k], torch.Tensor):
+                    all_images[k] = all_images[k].detach().cpu()
+                    if self.clamp:
+                        all_images[k] = torch.clamp(all_images[k], -1., 1.)
+
+            # convert to rgb if grayscale (already on cpu)
+            if all_images["inputs"].shape[1] == 1:
+                all_images = convert_to_rgb(all_images)
+
+            self.log_local(pl_module.logger.save_dir, split, all_images,
                            pl_module.global_step, pl_module.current_epoch, batch_idx)
 
             logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-            logger_log_images(pl_module, images, pl_module.global_step, split)
+            logger_log_images(pl_module, all_images, pl_module.global_step, split)
 
             if is_train:
                 pl_module.train()

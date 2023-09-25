@@ -34,6 +34,12 @@ class Darcy_Dataset(Dataset):
         self.img_mean = np.array([0, 0.194094975, 0.115737872]) # P, U1, U2
         self.img_std = np.array([0.08232874, 0.27291843, 0.12989907])
 
+        # load permeability fields
+        self.perm_names = os.listdir(osp.join(path, "permeability"))
+        self.perm_names.sort()
+        self.perm_mean = 1.14906847
+        self.perm_std = 7.81547992
+
         # load the parameter values
         self.param_names = os.listdir(osp.join(path, "params"))
         self.param_names.sort()
@@ -63,15 +69,21 @@ class Darcy_Dataset(Dataset):
         W = (np.squeeze(W) - self.param_mean) / self.param_std
         W = W*0.0
 
-        '''
-        U2 = torch.from_numpy(np.load(osp.join(self.root, "data", self.U2_names[idx]))).float()
-        U2 = (np.expand_dims(U2, axis=0) - self.img_mean[2]) / self.img_std[2]
-        '''
+        K = torch.from_numpy(np.load(osp.join(self.root, "permeability", self.perm_names[idx]))).float()
+        K = (np.expand_dims(K, axis=0) - self.perm_mean) / self.perm_std
 
         P = torch.from_numpy(np.load(osp.join(self.root, "data", self.P_names[idx]))).float()
         P = (np.expand_dims(P, axis=0) - self.img_mean[0]) / self.img_std[0]
 
-        return P, W
+        U1 = torch.from_numpy(np.load(osp.join(self.root, "data", self.U1_names[idx]))).float()
+        U1 = (np.expand_dims(U1, axis=0) - self.img_mean[1]) / self.img_std[1]
+
+        U2 = torch.from_numpy(np.load(osp.join(self.root, "data", self.U2_names[idx]))).float()
+        U2 = (np.expand_dims(U2, axis=0) - self.img_mean[2]) / self.img_std[2]
+
+        Data = np.concatenate([P, U1, U2, K], axis=0)
+
+        return Data, W
 
 class DarcyLoader(pl.LightningDataModule):
     def __init__(self, data_dir, batch_size=32, num_workers=8):
@@ -82,6 +94,41 @@ class DarcyLoader(pl.LightningDataModule):
 
     def setup(self, stage: str):
         self.train_dataset = Darcy_Dataset(self.data_dir)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+
+
+class Burgers_Dataset(Dataset):
+    def __init__(self, path):
+        self.root = path
+
+        # load the sample names
+        self.sample_names = os.listdir(osp.join(path, "data"))
+        self.img_mean = -3.010598882
+        self.img_std = 49.02098157
+
+    def __len__(self):
+        return len(self.sample_names)
+
+    def __getitem__(self, idx):
+
+        W = torch.tensor([0.0]).float()
+
+        Data = torch.from_numpy(np.load(osp.join(self.root, "data", self.sample_names[idx]))).float()
+        Data = (np.expand_dims(Data, axis=0) - self.img_mean) / self.img_std
+
+        return Data, W
+
+class BurgersLoader(pl.LightningDataModule):
+    def __init__(self, data_dir, batch_size=32, num_workers=8):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    def setup(self, stage: str):
+        self.train_dataset = Burgers_Dataset(self.data_dir)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
