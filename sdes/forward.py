@@ -18,6 +18,14 @@ class VP(nn.Module):
     def beta(self, t):
         return self.beta_min + t*(self.beta_max - self.beta_min)
 
+    def eps(self, noise, score, t, r):
+        # used for corrector step in predictor-corrector methods
+        alpha = 1 - self.beta(t)
+        noise_norm = torch.linalg.norm(noise.reshape((noise.shape[0], -1)), dim=-1).mean()
+        score_norm = torch.linalg.norm(score.reshape((score.shape[0], -1)), dim=-1).mean()
+        eps = 2*alpha*(r*noise_norm/score_norm)**2
+        return eps[:, None, None, None]
+
     def f(self, x, t):
         return -0.5*self.beta(t)[:, None, None, None]*x
 

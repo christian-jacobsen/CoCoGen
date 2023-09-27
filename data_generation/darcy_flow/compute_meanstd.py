@@ -13,15 +13,20 @@ def main():
     
     sample_names = os.listdir(osp.join(args.path, "data"))
     param_names = os.listdir(osp.join(args.path, "params"))
+    perm_names = os.listdir(osp.join(args.path, "permeability"))
 
     n = len(sample_names)
     m = len(param_names)
+    q = len(perm_names)
     print(str(m), " samples available!")
 
     sample_mean = np.array([0., 0., 0.])
     sample_std = np.array([0., 0., 0.])
     param_mean = 0.
     param_std = 0.
+
+    perm_mean = 0.
+    perm_std = 0.
 
     # compute data means
     for i in range(n):
@@ -49,8 +54,17 @@ def main():
 
         param_mean = param_mean + (np.sum(p) / len(p))
 
-    sample_mean = sample_mean / m
+    # permeability mean
+    for i in range(q):
+        pe = np.load(osp.join(args.path, "permeability", perm_names[i]))
+        if i == 0:
+            print('permeability shape: ', pe.shape)
+
+        perm_mean = perm_mean + (np.sum(pe) / (pe.shape[0]*pe.shape[1]))
+
+    sample_mean = sample_mean / n
     param_mean = param_mean / m
+    perm_mean = perm_mean / q
 
     # data std
     for i in range(n):
@@ -71,13 +85,21 @@ def main():
         p = np.load(osp.join(args.path, "params", param_names[i]))
         param_std += np.sum((p-param_mean)**2) / len(p)
 
-    sample_std = np.sqrt(sample_std / m)
+    # perm std
+    for i in range(q):
+        pe = np.load(osp.join(args.path, "permeability", perm_names[i]))
+        perm_std += np.sum((pe-perm_mean)**2) / len(pe)
+
+    sample_std = np.sqrt(sample_std / n)
     param_std = np.sqrt(param_std / m)
+    perm_std = np.sqrt(perm_std / q)
 
     print("Data mean: [P, U1, U2] = "+str(sample_mean))
     print("Data std: [P, U1, U2] = "+str(sample_std))
     print("Param mean: "+str(param_mean))
     print("Param std: "+str(param_std))
+    print("Permeability mean: "+str(perm_mean))
+    print("Permeability std: "+str(perm_std))
 
 
 if __name__ == "__main__":
