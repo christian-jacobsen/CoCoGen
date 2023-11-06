@@ -103,13 +103,18 @@ def get_likelihood_fn(sde, inverse_scaler, hutchinson_type='Rademacher',
       z = from_flattened_numpy(zp[:-shape[0]], shape).to(data.device).type(torch.float32)
       delta_logp = from_flattened_numpy(zp[-shape[0]:], (shape[0],)).to(data.device).type(torch.float32)
       prior_logp = sde.prior_logp(z)
+      nll = -prior_logp - delta_logp
+      '''
       bpd = -(prior_logp + delta_logp) / np.log(2)
       N = np.prod(shape[1:])
       bpd = bpd / N
       # A hack to convert log-likelihoods to bits/dim
-      #offset = 7. - inverse_scaler(-1.)
+      offset = 7. - inverse_scaler(-1.)
       offset = 0
       bpd = bpd + offset
-      return bpd, z, nfe
+      '''
+      return nll, z, nfe
+
+  return likelihood_fn
 
   return likelihood_fn

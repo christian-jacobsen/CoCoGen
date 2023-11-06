@@ -85,21 +85,20 @@ class ResNetBlock(torch.nn.Module):
         self.skip_scale = skip_scale
         self.adaptive_scale = adaptive_scale
 
-        self.linear1 = nn.Linear(in_channels, out_channels)
         self.linear2 = nn.Linear(out_channels, out_channels)
         self.affine = nn.Linear(emb_channels, out_channels*(2 if adaptive_scale else 1))
 
     def forward(self, x, emb):
         #print(x.shape, emb.shape)
         orig = x
-        params = self.affine(emb).to(x.dtype)
+        params = nn.functional.silu(self.affine(emb).to(x.dtype))
         if self.adaptive_scale:
             scale, shift = params.chunk(2, dim=-1)
             x = nn.functional.silu(torch.addcmul(shift, x, scale+1))
         else:
             x = nn.functional.silu(x.add_(params))
 
-        x = self.linear1(nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = self.linear2(nn.functional.dropout(x, p=self.dropout, training=self.training))
         x = x.add_(orig)
         x = x * self.skip_scale
 
@@ -125,8 +124,8 @@ class ResNet(torch.nn.Module):
         block_kwargs = dict(dropout = dropout, skip_scale=1.0, adaptive_scale=True)
 
         self.map_noise = PositionalEmbedding(size=noise_channels, type=emb_type)
-        self.map_layer0 = nn.Linear(noise_channels, emb_channels)
-        self.map_layer1 = nn.Linear(emb_channels, emb_channels)
+        self.map_layer = nn.Linear(noise_channels, emb_channels)
+        #self.map_layer1 = nn.Linear(emb_channels, emb_channels)
 
         self.first_layer = nn.Linear(in_channels, model_channels)
         self.blocks = nn.ModuleList()
@@ -141,15 +140,11 @@ class ResNet(torch.nn.Module):
     def forward(self, x, noise_labels, class_labels=None, augment_labels=None):
         # Mapping
         emb = self.map_noise(noise_labels)
-        # is swap sin/cos needed?
-        emb = nn.functional.silu(self.map_layer0(emb))
-        emb = nn.functional.silu(self.map_layer1(emb))
-        #print('ini shape', x.shape)
+        #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
+        emb = nn.functional.silu(self.map_layer(emb))
+        #emb = nn.functional.silu(self.map_layer1(emb))
         x = self.first_layer(x)
-        #print('first layer', x.shape)
         for block in self.blocks:
             x = block(x, emb)
-        #    print(x.shape)
-        x = self.final_layer(x)
-        #print('final layer', x.shape)
+        x = self.final_layer(nn.functional.silu(x))
         return x
