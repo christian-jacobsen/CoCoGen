@@ -23,26 +23,26 @@ class EulerMaruyama(nn.Module):
         self.intermediate_steps = intermediate_steps
 
     @torch.no_grad()
-    def predictor_step(self, x, c, t, context_mask, step_size, unet, sde, device):
-        mean_x = x - (sde.f(x, t) - sde.g(t)**2*unet(x, c, t, context_mask))*step_size
+    def predictor_step(self, x, c, t, context_mask, step_size, unet, sde, device, **kwargs):
+        mean_x = x - (sde.f(x, t) - sde.g(t)**2*unet.forward_with_cond_scale(x, c, t, context_mask, **kwargs))*step_size
         x = mean_x + torch.sqrt(step_size)*sde.g(t)*torch.randn_like(x)
         return x, mean_x
 
     @torch.no_grad()
-    def forward(self, unet, sde, data_size, device, return_intermediates=False):
+    def forward(self, unet, sde, data_size, context_mask, device, return_intermediates=False, **kwargs):
+        #TODO: context_mask
         batch_size = data_size[0]
         noise = sde.sample_prior(data_size, device=device)
         time_steps = torch.linspace(1., self.eps, self.num_time_steps, device=device)
         step_size = time_steps[0]-time_steps[1]
         c = torch.zeros((batch_size, unet.cond_size), device=device)
-        context_mask = torch.zeros_like(c)
 
         x = noise + 0.
         intermediates = []
         i = 1
         for time_step in time_steps:
             batch_time_step = torch.ones(batch_size, device=device) * time_step
-            x, mean_x = self.predictor_step(x, c, batch_time_step, context_mask, step_size, unet, sde, device)
+            x, mean_x = self.predictor_step(x, c, batch_time_step, context_mask, step_size, unet, sde, device, **kwargs)
             if i % self.intermediate_steps == 0:
                 intermediates.append(x)
             i += 1
