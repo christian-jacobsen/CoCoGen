@@ -30,3 +30,130 @@ def convert_to_rgb(images):
         converted_images[k] = torch.cat(converted_images[k], dim=0)[:, :-1]
 
     return converted_images
+
+def plot_inpainting(data, samples, sensors, path):
+    batch_size = data.shape[0]
+
+    plt.figure(1, figsize=(25, 38))
+    plt.cla()
+    plt.clf()
+    cmap = plt.get_cmap('jet')
+    cmap.set_bad('black')
+
+    im_ratio = data.shape[3]/data.shape[2]
+
+
+    # plot sensors (pressure)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, i+1)
+        sensors[i][sensors[i]==0] = np.nan
+        plt.imshow(sensors[i][0], cmap=cmap)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Sensor Locations (Pressure)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+    # plot data (pressure)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, batch_size+i+1)
+        plt.imshow(data[i][0], cmap=cmap)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Data (Pressure)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+    # plot samples (pressure)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, 2*batch_size+i+1)
+        plt.imshow(samples[i][0], cmap=cmap)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Samples (Pressure)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+    # plot error (pressure)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, 3*batch_size+i+1)
+        v = np.max(np.abs(samples[i][0]-data[i][0]))
+        plt.imshow(samples[i][0]-data[i][0], cmap='bwr', vmin=-v, vmax=v)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Error (Pressure)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+    # plot data (perm)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, 4*batch_size+i+1)
+        plt.imshow(data[i][1], cmap=cmap)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Data (Permeability)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+    # plot samples (perm)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, 5*batch_size+i+1)
+        plt.imshow(samples[i][1], cmap=cmap)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Samples (Permeability)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+    # plot error (perm)
+    for i in range(batch_size):
+        plt.subplot(7, batch_size, 6*batch_size+i+1)
+        v = np.max(np.abs(samples[i][1]-data[i][1]))
+        plt.imshow(samples[i][1]-data[i][1], cmap='bwr', vmin=-v, vmax=v)
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        plt.title('Error (Permeability)')
+        plt.colorbar(fraction=0.047*im_ratio)
+
+
+    plt.savefig(path, bbox_inches='tight', dpi=300)
+
+    # also plot means
+    plt.figure(2, figsize=(19, 11))
+    plt.subplot(2, 3, 1)
+    plt.imshow(data[0][0], cmap=cmap)
+    plt.xlabel(r'$x_1$')
+    plt.ylabel(r'$x_2$')
+    plt.title('Data (Pressure)')
+    plt.colorbar(fraction=0.047*im_ratio)
+
+    plt.subplot(2, 3, 2)
+    plt.imshow(np.mean(samples[:, 0, :, :], axis=0), cmap=cmap)
+    plt.xlabel(r'$x_1$')
+    plt.ylabel(r'$x_2$')
+    plt.title('Mean Reconstruction (Pressure)')
+    plt.colorbar(fraction=0.047*im_ratio)
+
+    plt.subplot(2, 3, 3)
+    plt.imshow(np.std(samples[:, 0, :, :], axis=0), cmap=cmap)
+    plt.xlabel(r'$x_1$')
+    plt.ylabel(r'$x_2$')
+    plt.title('Standard Deviation Reconstruction (Pressure)')
+    plt.colorbar(fraction=0.047*im_ratio)
+
+    plt.subplot(2, 3, 4)
+    plt.imshow(data[0][1], cmap=cmap)
+    plt.xlabel(r'$x_1$')
+    plt.ylabel(r'$x_2$')
+    plt.title('Data (Permeability)')
+    plt.colorbar(fraction=0.047*im_ratio)
+
+    plt.subplot(2, 3, 5)
+    plt.imshow(np.mean(samples[:, 1, :, :], axis=0), cmap=cmap)
+    plt.xlabel(r'$x_1$')
+    plt.ylabel(r'$x_2$')
+    plt.title('Mean Reconstruction (Permeability)')
+    plt.colorbar(fraction=0.047*im_ratio)
+
+    plt.subplot(2, 3, 6)
+    plt.imshow(np.std(samples[:, 1, :, :], axis=0), cmap=cmap)
+    plt.xlabel(r'$x_1$')
+    plt.ylabel(r'$x_2$')
+    plt.title('Standard Deviation Reconstruction (Permeability)')
+    plt.colorbar(fraction=0.047*im_ratio)
+
+    plt.savefig(path[:-4]+'_uncertainty.png', bbox_inches='tight', dpi=300)

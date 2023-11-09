@@ -1,0 +1,55 @@
+model:
+  target: models.score_matching.DiffusionSDE
+  params:
+    lr: 1e-4
+    unet_config:
+      target: models.unets.UNET1
+      params:
+        in_channels: 1
+        n_feat: 256
+        pool_size: 4
+        data_size: 64
+        cond_size: 1
+    sde_config:
+      target: sdes.forward.VP
+      params:
+        beta_min: 1e-4
+        beta_max: 2
+    sampler_config:
+      target: sdes.backward.EulerPhysics
+      params:
+        num_time_steps: 2000
+        eps: 1e-5
+        residual_config:
+          target: physics.operators.ViscousBurgers
+          params:
+            nu: 0.01
+            dx: 0.03125
+            dt: 0.01
+            mu: -0.751762367
+            sigma: 8.041401807
+    residual_config:
+      target: physics.operators.ViscousBurgers
+      params:
+        nu: 0.01
+        dx: 0.03125
+        dt: 0.01
+        mu: -0.751762367
+        sigma: 8.041401807
+
+data:
+  target: dataloaders.loaders.BurgersLoader
+  params:
+    data_dir: /home/csjacobs/git/diffusionPDE/datasets/Burgers1D/Nu0.01_64
+    batch_size: 32
+    num_workers: 8
+
+lightning:
+  trainer:
+    accelerator: gpu
+    strategy: ddp
+    devices: 1
+    precision: 16-mixed
+  epochs: 5000
+  save_every_n_epochs: 2
+  sample_every_n_steps: 100

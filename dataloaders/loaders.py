@@ -75,13 +75,15 @@ class Darcy_Dataset(Dataset):
         P = torch.from_numpy(np.load(osp.join(self.root, "data", self.P_names[idx]))).float()
         P = (np.expand_dims(P, axis=0) - self.img_mean[0]) / self.img_std[0]
 
+        '''
         U1 = torch.from_numpy(np.load(osp.join(self.root, "data", self.U1_names[idx]))).float()
         U1 = (np.expand_dims(U1, axis=0) - self.img_mean[1]) / self.img_std[1]
 
         U2 = torch.from_numpy(np.load(osp.join(self.root, "data", self.U2_names[idx]))).float()
         U2 = (np.expand_dims(U2, axis=0) - self.img_mean[2]) / self.img_std[2]
+        '''
 
-        Data = np.concatenate([P, U1, U2, K], axis=0)
+        Data = np.concatenate([P, K], axis=0)
 
         return Data, W
 
@@ -105,8 +107,8 @@ class Burgers_Dataset(Dataset):
 
         # load the sample names
         self.sample_names = os.listdir(osp.join(path, "data"))
-        self.img_mean = -3.010598882
-        self.img_std = 49.02098157
+        self.img_mean = -0.751762357#-3.010598882
+        self.img_std = 8.041401807#49.02098157
 
     def __len__(self):
         return len(self.sample_names)
