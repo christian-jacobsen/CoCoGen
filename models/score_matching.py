@@ -5,6 +5,7 @@ Author: Christian Jacobsen, University of Michigan 2023
 
 import torch
 import pytorch_lightning as pl
+import time
 import sys
 from einops import rearrange, repeat
 from torchvision.utils import make_grid
@@ -19,6 +20,7 @@ class DiffusionSDE(pl.LightningModule):
                  unet_config,
                  sde_config,
                  sampler_config,
+                 residual_config,
                  eps=1e-5,
                  elbo_weight=0.,
                  log_every_t=50,
@@ -30,6 +32,7 @@ class DiffusionSDE(pl.LightningModule):
         self.unet = instantiate_from_config(unet_config)
         self.sde = instantiate_from_config(sde_config)
         self.sampler = instantiate_from_config(sampler_config)
+        self.residual = instantiate_from_config(residual_config)
         self.eps = eps
         self.lr = lr
         self.elbo_weight = elbo_weight
@@ -135,10 +138,33 @@ class DiffusionSDE(pl.LightningModule):
         #log["diffusion_row"] = self._get_rows_from_list(forward_row)
 
         # backward sampling (denoising)
+        start_time = time.time()
         samples, intermediates = self.sample(batch_size=N)
+        end_time = time.time()
         log["samples"] = samples
+        
+        p = samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+        k = samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+        residual, _, _, _, _, _, _ = self.residual.r_diff(p, k)
+
+        self.log("physics_residual_l2_norm", torch.mean(residual**2),
+                 prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log("sample time", end_time-start_time, logger=True, prog_bar=True,
+                 on_step=False, on_epoch=True)
 
         return log
+
+    def sample_inpaint(self, values, indices):
+        # samples with inpainting
+        # inputs: values -> (b, c, n, n) defines values for batch size which have measurements [non-normalized]
+        #         indices -> (s, 4) # defines the indices for each of the s measurements in the batch
+        #                       where last dim corresponds to indices (b, c, n, n) of the data
+        batch_size = values.shape[0]
+        samples = self.sampler.inpaint(self.unet, self.sde, 
+                                       (batch_size, self.unet.in_channels, self.unet.data_size, self.unet.data_size),
+                                       values, indices, device=self.device)
+        return samples
+
 
     def _get_rows_from_list(self, samples):
         n_per_row = len(samples)

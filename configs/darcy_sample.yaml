@@ -1,0 +1,29 @@
+batch_size: 25
+device: 0
+data:
+  target: dataloaders.loaders.DarcyLoader
+  params:
+    data_dir: /home/csjacobs/git/diffusionPDE/datasets/Darcy_n16
+    batch_size: 128
+    num_workers: 8
+sensors:
+  target: sensors.sensors.DarcyPressureRandom
+  params:
+    sensors: 500
+sampler_config:
+  target: sdes.backward.EulerPhysics
+  params:
+    num_time_steps: 2000
+    resample: 5
+    residual_step_size: 4e-11
+    eps: 1e-5
+    residual_config:
+      target: physics.operators.DarcyFlow
+      params:
+        dx: 0.015625
+        eps: 1e-8
+        mu_p: 0.0
+        sigma_p: 0.08232874
+        mu_k: 1.14906847
+        sigma_k: 7.81547992
+

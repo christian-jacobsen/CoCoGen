@@ -24,7 +24,7 @@ model:
 data:
   target: dataloaders.loaders.BurgersLoader
   params:
-    data_dir: /home/csjacobs/git/diffusionPDE/datasets/Burgers1D/Nu0.01
+    data_dir: /home/csjacobs/git/diffusionPDE/datasets/Burgers1D/Nu0.01_256
     batch_size: 24
     num_workers: 8
 

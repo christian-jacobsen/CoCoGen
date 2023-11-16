@@ -9,7 +9,7 @@ model:
         n_feat: 256
         pool_size: 4
         data_size: 64
-        cond_size: 16
+        cond_size: 256
     sde_config:
       target: sdes.forward.VP
       params:
