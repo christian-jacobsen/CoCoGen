@@ -5,3 +5,4 @@
 *.npz
 *old_code
 output*
+*.pth

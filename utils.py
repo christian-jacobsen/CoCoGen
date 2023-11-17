@@ -7,6 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+def zero_module(module):
+    '''
+    zero the parameters of a module and return it
+    '''
+    for p in module.parameters():
+        p.detach().zero_()
+    return module
+
 def get_obj_from_str(string):
     module, cls = string.rsplit(".", 1)
     return getattr(importlib.import_module(module, package=None), cls)

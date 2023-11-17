@@ -67,7 +67,7 @@ class Darcy_Dataset(Dataset):
 
         W = torch.from_numpy(np.load(osp.join(self.root, "params", self.param_names[idx]))).float()
         W = (np.squeeze(W) - self.param_mean) / self.param_std
-        W = W*0.0
+        W = W
 
         K = torch.from_numpy(np.load(osp.join(self.root, "permeability", self.perm_names[idx]))).float()
         K = (np.expand_dims(K, axis=0) - self.perm_mean) / self.perm_std
