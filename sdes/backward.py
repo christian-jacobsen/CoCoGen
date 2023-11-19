@@ -32,13 +32,18 @@ class EulerMaruyama(nn.Module):
         return x, mean_x
 
     @torch.no_grad()
-    def forward(self, unet, sde, data_size, context_mask, device, return_intermediates=False, **kwargs):
-        #TODO: context_mask
+
+    def forward(self, unet, sde, data_size, device, c=None, return_intermediates=False):
         batch_size = data_size[0]
         noise = sde.sample_prior(data_size, device=device)
         time_steps = torch.linspace(1., self.eps, self.num_time_steps, device=device)
         step_size = time_steps[0]-time_steps[1]
-        c = torch.zeros((batch_size, unet.cond_size), device=device)
+
+        if c is None:
+            c = torch.zeros((batch_size, unet.cond_size), device=device)
+        else:
+            c = c[:batch_size]
+        context_mask = torch.zeros_like(c)
 
         x = noise + 0.
         intermediates = []

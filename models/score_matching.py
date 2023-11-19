@@ -110,9 +110,10 @@ class DiffusionSDE(pl.LightningModule):
         return x, c
 
     @torch.no_grad()
-    def sample(self, batch_size=8):
+    def sample(self, batch_size=8, c=None):
         return self.sampler.forward(self.unet, self.sde, 
                                     (batch_size, self.unet.in_channels, self.unet.data_size, self.unet.data_size), 
+                                    c=c,
                                     device=self.device)
 
 
@@ -139,7 +140,7 @@ class DiffusionSDE(pl.LightningModule):
 
         # backward sampling (denoising)
         start_time = time.time()
-        samples, intermediates = self.sample(batch_size=N)
+        samples, intermediates = self.sample(batch_size=N, c=c)
         end_time = time.time()
         log["samples"] = samples
         

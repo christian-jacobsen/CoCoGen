@@ -24,6 +24,7 @@ def get_parser():
     parser.add_argument('--config', type=str, help='path to config file')
     parser.add_argument('--seed', type=int, default=101, help='global seed for reproducibility')
     parser.add_argument('--resume', '-r', type=str, default="", help='resume from logdir or log file')
+    parser.add_argument('--unet_weights', type=str, help="load unet weights only from *.pth file")
     return parser
 
 def main():
@@ -132,8 +133,20 @@ def main():
 
     dataloader = instantiate_from_config(data_config)
 
+    # load unet weights?
+    if known.unet_weights is not None:
+        print('Loading unet model weights from .pth file.')
+        model.unet.load_state_dict(torch.load(known.unet_weights))
+
+    # lock the base model?
+    if lightning_config.lock_base:
+        for name, param in model.named_parameters():
+            if ('zero_conv' not in name) and ('control' not in name):
+                param.requires_grad = False
 
     if known.resume:
+        if known.unet_weights is not None:
+            raise Exception("Cannot resume training from checkpoint and load unet weights")
         trainer.fit(model, dataloader, ckpt_path=known.resume_from_checkpoint)
     else:
         trainer.fit(model, dataloader)
