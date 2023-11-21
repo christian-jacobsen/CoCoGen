@@ -23,15 +23,7 @@ import argparse
 
 sys.path.append("/home/csjacobs/git/diffusionPDE")
 
-from utils import instantiate_from_config
-
-def zero_module(module):
-    '''
-    zero the parameters of a module and return it
-    '''
-    for p in module.parameters():
-        p.detach().zero_()
-    return module
+from utils import instantiate_from_config, zero_module
 
 class ResidualConvBlock(nn.Module):
     def __init__(

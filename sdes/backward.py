@@ -27,13 +27,12 @@ class EulerMaruyama(nn.Module):
 
     @torch.no_grad()
     def predictor_step(self, x, c, t, context_mask, step_size, unet, sde, device, **kwargs):
-        mean_x = x - (sde.f(x, t) - sde.g(t)**2*unet.forward_with_cond_scale(x, c, t, context_mask, **kwargs))*step_size
+        mean_x = x - (sde.f(x, t) - sde.g(t)**2*unet(x, c, t, context_mask, **kwargs))*step_size
         x = mean_x + torch.sqrt(step_size)*sde.g(t)*torch.randn_like(x)
         return x, mean_x
 
     @torch.no_grad()
-
-    def forward(self, unet, sde, data_size, device, c=None, return_intermediates=False):
+    def forward(self, unet, sde, data_size, device, c=None, return_intermediates=False, **kwargs):
         batch_size = data_size[0]
         noise = sde.sample_prior(data_size, device=device)
         time_steps = torch.linspace(1., self.eps, self.num_time_steps, device=device)

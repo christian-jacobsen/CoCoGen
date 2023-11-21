@@ -4,77 +4,7 @@ from .embeddings import PositionalEmbedding
 from einops import rearrange, repeat
 from functools import partial
 
-class Block(nn.Module):
-    def __init__(self, size: int):
-        super().__init__()
-        self.ff = nn.Linear(size, size)
-        self.act = nn.SiLU()
-
-    def forward(self, x: torch.Tensor):
-        return x + self.act(self.ff(x))
-
-class Block_SS(nn.Module):
-    def __init__(self, size: int):
-        super().__init__()
-        self.ff = nn.Linear(size, size)
-        self.act = nn.SiLU()
-
-    def forward(self, x: torch.Tensor, scale_shift=None):
-        if scale_shift is not None:
-            scale, shift = scale_shift
-            return (scale + 1) * x + shift + self.act(self.ff(x))
-        return x + self.act(self.ff(x))
-
-class MLP(nn.Module):
-    def __init__(self, hidden_size: int = 128, hidden_layers: int = 3, emb_size: int = 128,
-                 time_emb: str = "sinusoidal", input_emb: str = "sinusoidal"):
-        super().__init__()
-
-        self.time_mlp = PositionalEmbedding(emb_size, time_emb, scale=25.0)#GaussianFourierProjection(emb_size)
-        self.input_mlp1 = PositionalEmbedding(emb_size, input_emb, scale=25.0)
-        self.input_mlp2 = PositionalEmbedding(emb_size, input_emb, scale=25.0)
-
-        concat_size = len(self.time_mlp.layer) + \
-            len(self.input_mlp1.layer) + len(self.input_mlp2.layer)
-        layers = [nn.Linear(concat_size, hidden_size), nn.GELU()]
-        for _ in range(hidden_layers):
-            layers.append(Block(hidden_size))
-        layers.append(nn.Linear(hidden_size, 2))
-        self.joint_mlp = nn.Sequential(*layers)
-
-    def forward(self, x, t):
-        x1_emb = self.input_mlp1(x[:, 0])
-        x2_emb = self.input_mlp2(x[:, 1])
-        t_emb = self.time_mlp(t)
-        x = torch.cat((x1_emb, x2_emb, t_emb), dim=-1)
-        x = self.joint_mlp(x)
-        return x
-
-class MLP_SS(nn.Module):
-    def __init__(self, hidden_size: int = 128, hidden_layers: int = 3, emb_size: int = 128,
-                 time_emb: str = "sinusoidal", input_emb: str = "sinusoidal"):
-        super().__init__()
-
-        self.time_mlp = nn.Sequential(PositionalEmbedding(emb_size, time_emb, scale=25.0),
-                                      nn.SiLU(), nn.Linear(emb_size, 2*emb_size))
-        self.input_mlp = nn.Linear(2, hidden_size)
-        #self.input_mlp2 = PositionalEmbedding(emb_size, input_emb, scale=25.0)
-
-        #concat_size = 3
-        #layers = [nn.Linear(concat_size, hidden_size), nn.GELU()]
-        self.blocks = nn.ModuleList([Block_SS(hidden_size) for _ in range(hidden_layers)])
-        self.final_layer = nn.Linear(hidden_size, 2)
-
-    def forward(self, x, t):
-        x = self.input_mlp(x)
-        x = nn.SiLU()(x)
-        #x2_emb = self.input_mlp2(x[:, 1])
-        temb = self.time_mlp(t)
-        scale_shift = temb.chunk(2, dim=-1)
-        for block in self.blocks:
-            x = block(x, scale_shift)
-        x = self.final_layer(x)
-        return x
+from utils import zero_module
 
 class ResNetBlock(torch.nn.Module):
     def __init__(self, in_channels, out_channels, time_emb_channels, dropout=0,
@@ -184,9 +114,7 @@ class ResNet(torch.nn.Module):
 
 class CFGResNet(torch.nn.Module):
     # https://github.com/lucidrains/denoising-diffusion-pytorch/blob/main/denoising_diffusion_pytorch/classifier_free_guidance.py
-    def __init__(self, in_channels, out_channels,
-                label_dim           = 0,        # Number of class labels, 0 = unconditional.
-                augment_dim         = 0,        # Augmentation label dimensionality, 0 = no augmentation.
+    def __init__(self, in_channels, out_channels, cond_size,
                 model_channels      = 128,      # Channel multiplier.
                 channel_mult        = [1,1,1,1],# Channel multiplier for each resblock layer.
                 channel_mult_emb    = 4,
@@ -206,6 +134,7 @@ class CFGResNet(torch.nn.Module):
         block_kwargs = dict(dropout = dropout, skip_scale=1.0, adaptive_scale=True)
 
         self.null_emb = nn.Parameter(torch.randn(emb_channels))
+        self.cond_size = cond_size
         self.cond_drop_prob = cond_drop_prob
 
         self.map_time = PositionalEmbedding(size=time_channels, type=emb_type)
@@ -231,23 +160,135 @@ class CFGResNet(torch.nn.Module):
         else:
             return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
 
-    def forward_with_cond_scale(self, *args, cond_scale = 1., rescaled_phi = 0., **kwargs):
-        logits =  self.forward(*args, cond_drop_prob=0., **kwargs)
-        if cond_scale == 1:
-            return logits
-        null_logits =  self.forward(*args, cond_drop_prob=1., **kwargs)
-        scaled_logits = null_logits + (logits - null_logits) * cond_scale
+    def forward(self, x, cond, time, context_mask=None, cond_drop_prob=0, cond_scale = 1., rescaled_phi = 0., sampling=False):
+        if sampling:
+            logits =  self._forward(x, cond, time, context_mask=None, cond_drop_prob=0.)
+            if cond_scale == 1:
+                return logits
+            null_logits =  self._forward(x, cond, time, context_mask=None, cond_drop_prob=1.)
+            scaled_logits = null_logits + (logits - null_logits) * cond_scale
 
-        if rescaled_phi == 0.:
-            return scaled_logits
+            if rescaled_phi == 0.:
+                return scaled_logits
 
-        std_fn = partial(torch.std, dim = tuple(range(1, scaled_logits.ndim)), keepdim = True)
-        rescaled_logits = scaled_logits * (std_fn(logits) / std_fn(scaled_logits))
+            std_fn = partial(torch.std, dim = tuple(range(1, scaled_logits.ndim)), keepdim = True)
+            rescaled_logits = scaled_logits * (std_fn(logits) / std_fn(scaled_logits))
 
-        return rescaled_logits * rescaled_phi + scaled_logits * (1. - rescaled_phi)
+            return rescaled_logits * rescaled_phi + scaled_logits * (1. - rescaled_phi)
+        else:
+            return self._forward(x, cond, time, context_mask, cond_drop_prob)
 
-    def forward(self, x, time, cond, context_mask=None, cond_drop_prob=None, sampling=False, class_labels=None, augment_labels=None):
+    def _forward(self, x, cond, time, context_mask=None, cond_drop_prob=None):
+        # context_mask dummy var
         batch_size = x.shape[0]
+        # Mapping
+        time_emb = self.map_time(time)
+        cond_emb = self.map_cond(cond)
+        #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
+        time_emb = nn.functional.silu(self.map_time_layer(time_emb))
+        cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb))
+        #emb = nn.functional.silu(self.map_layer1(emb))
+        if cond_drop_prob == None:
+            cond_drop_prob = self.cond_drop_prob
+        if cond_drop_prob > 0:
+            keep_mask = self.prob_mask_like((batch_size,), 1 - self.cond_drop_prob, device = x.device)
+            null_cond_emb = repeat(self.null_emb, 'd -> b d', b = batch_size) 
+
+            c_emb = torch.where(
+                rearrange(keep_mask, 'b -> b 1'),
+                c_emb,
+                null_cond_emb
+            )
+        x = self.first_layer(x)
+        for block in self.blocks:
+            x = block(x, time_emb, cond_emb)
+        x = self.final_layer(nn.functional.silu(x))
+        return x
+
+class ResidualConv1DBlock(nn.Module):
+    def __init__(
+        self, in_channels: int, out_channels: int, is_res: bool = False
+    ) -> None:
+        super().__init__()
+        '''
+        standard ResNet style convolutional block
+        '''
+        self.same_channels = in_channels==out_channels
+        self.is_res = is_res
+        self.conv1 = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, 1, 1),
+            #nn.BatchNorm2d(out_channels),
+            nn.SiLU(),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv1d(out_channels, out_channels, 1, 1),
+            #nn.BatchNorm2d(out_channels),
+            nn.SiLU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.is_res:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            # this adds on correct residual in case channels have increased
+            if self.same_channels:
+                out = x + x2
+            else:
+                out = x1 + x2 
+            return out 
+        else:
+            x1 = self.conv1(x)
+            x2 = self.conv2(x1)
+            return x2
+
+class CtrlResNet(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, cond_size,
+                conv_channels       = 256,      # Channel multiplier.
+                model_channels      = 128,      # Channel multiplier.
+                channel_mult        = [1,1,1,1],# Channel multiplier for each resblock layer.
+                channel_mult_emb    = 4,
+                num_blocks          = 4,        # Number of resblocks(mid) per level.
+                dropout             = 0.,      # Dropout rate.
+                emb_type            = "sinusoidal",# Timestep embedding type
+                channel_mult_time  = 1,        # Time embedding size
+                channel_mult_cond   = 1,        # Conditional embedding size
+                ):
+
+        super().__init__()
+
+        emb_channels = model_channels * channel_mult_emb
+        time_channels = model_channels * channel_mult_time
+        cond_channels = model_channels * channel_mult_cond
+        block_kwargs = dict(dropout = dropout, skip_scale=1.0, adaptive_scale=True)
+
+        self.null_emb = nn.Parameter(torch.randn(emb_channels))
+        self.cond_size = cond_size
+
+        self.map_time = PositionalEmbedding(size=time_channels, type=emb_type)
+        self.map_cond = PositionalEmbedding(size=cond_channels, type=emb_type)
+        self.map_time_layer = nn.Linear(time_channels, emb_channels)
+        self.map_cond_layer = nn.Linear(cond_channels, emb_channels) # Can also be used for the controlNet (replace Vec2Img)
+
+        self.first_layer = nn.Linear(in_channels, model_channels)
+        self.blocks = nn.ModuleList()
+        cout = model_channels
+
+        self.ctrlBlocks = nn.ModuleList()
+        self.ctrlOutBlocks = nn.ModuleList()
+        self.ctrl_init_conv = zero_module(nn.Conv1d(1, conv_channels, 1))
+
+        for level, mult in enumerate(channel_mult):
+            for _ in range(num_blocks):
+                cin = cout
+                cout = model_channels * mult
+                self.blocks.append(ResNetBlock(cin, cout, emb_channels, **block_kwargs))
+                self.ctrlBlocks.append(zero_module(nn.Conv1d(conv_channels, conv_channels, 1)))
+                self.ctrlOutBlocks.append(nn.Sequential(zero_module(nn.Conv1d(conv_channels, 1, 1)),
+                                                        nn.Flatten(),
+                                                        nn.SiLU()))
+        self.final_layer = nn.Linear(cout, out_channels)
+
+    def forward(self, x, cond, time, context_mask=None, controlnet=False):
         if context_mask is not None:
             cond = cond*context_mask
         # Mapping
@@ -257,20 +298,17 @@ class CFGResNet(torch.nn.Module):
         time_emb = nn.functional.silu(self.map_time_layer(time_emb))
         cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb))
         #emb = nn.functional.silu(self.map_layer1(emb))
-        if not sampling:
-            if cond_drop_prob == None:
-                cond_drop_prob = self.cond_drop_prob
-            if cond_drop_prob > 0:
-                keep_mask = self.prob_mask_like((batch_size,), 1 - self.cond_drop_prob, device = x.device)
-                null_cond_emb = repeat(self.null_emb, 'd -> b d', b = batch_size) 
 
-                c_emb = torch.where(
-                    rearrange(keep_mask, 'b -> b 1'),
-                    c_emb,
-                    null_cond_emb
-                )
         x = self.first_layer(x)
-        for block in self.blocks:
-            x = block(x, time_emb, cond_emb)
+        if controlnet:
+            ctrl_cond = self.ctrl_init_conv(rearrange(cond_emb, 'b d -> b 1 d'))
+            for block, ctrlBlock, ctrlOutBlock in zip(self.blocks, self.ctrlBlocks, self.ctrlOutBlocks):
+                x = block(x, time_emb)
+                ctrl_cond = ctrlBlock(ctrl_cond)
+                ctrl_out =  ctrlOutBlock(ctrl_cond)
+                x += ctrl_out
+        else:
+            for block in self.blocks:
+                x = block(x, time_emb)
         x = self.final_layer(nn.functional.silu(x))
         return x
