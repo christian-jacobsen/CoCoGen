@@ -6,24 +6,42 @@ from functools import partial
 
 from utils import zero_module
 
-class ResNetBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, time_emb_channels, dropout=0,
-                 skip_scale=1, adaptive_scale=True):
+class Affine(nn.Module):
+    #https://github.com/facebookresearch/deit/blob/263a3fcafc2bf17885a4af62e6030552f346dc71/resmlp_models.py#L16C9-L16C9
+    def __init__(self, dim):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.emb_channels = time_emb_channels
+        self.alpha = nn.Parameter(torch.ones(dim))
+        self.beta = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, x):
+        return self.alpha * x + self.beta    
+
+class ResNetBlock(torch.nn.Module):
+    def __init__(self, in_dim, out_dim, time_emb_dim, dropout=0,
+                 skip_scale=1, adaptive_scale=True, affine=False):
+        super().__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.emb_dim = time_emb_dim
         self.dropout = dropout
         self.skip_scale = skip_scale
         self.adaptive_scale = adaptive_scale
 
-        self.linear = nn.Linear(out_channels, out_channels)
-        self.affine = nn.Linear(time_emb_channels, out_channels*(2 if adaptive_scale else 1))
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.map_cond = nn.Linear(time_emb_dim, out_dim*(2 if adaptive_scale else 1))
+
+        if affine:
+            self.pre_norm = Affine(in_dim)
+            self.post_norm = Affine(out_dim)
+        else:
+            self.pre_norm = nn.Identity()
+            self.post_norm = nn.Identity()
 
     def forward(self, x, time_emb=None):
         #print(x.shape, emb.shape)
         orig = x
-        params = nn.functional.silu(self.affine(time_emb).to(x.dtype))
+        params = nn.functional.silu(self.map_cond(time_emb).to(x.dtype))
+        x = self.pre_norm(x)
         if self.adaptive_scale:
             scale, shift = params.chunk(2, dim=-1)
             x = nn.functional.silu(torch.addcmul(shift, x, scale+1))
@@ -31,30 +49,39 @@ class ResNetBlock(torch.nn.Module):
             x = nn.functional.silu(x.add_(params))
 
         x = self.linear(nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = self.post_norm(x)
         x = x.add_(orig)
         x = x * self.skip_scale
 
         return x
 
 class CondResNetBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, time_emb_channels, cond_emb_channels, dropout=0,
-                 skip_scale=1, adaptive_scale=True):
+    def __init__(self, in_dim, out_dim, time_emb_dim, cond_emb_dim, dropout=0,
+                 skip_scale=1, adaptive_scale=True, affine=False):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.emb_channels = time_emb_channels
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.emb_dim = time_emb_dim
         self.dropout = dropout
         self.skip_scale = skip_scale
         self.adaptive_scale = adaptive_scale
 
-        self.linear = nn.Linear(out_channels, out_channels)
-        self.affine = nn.Linear(time_emb_channels+cond_emb_channels, out_channels*(2 if adaptive_scale else 1))
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.map_cond = nn.Linear(time_emb_dim+cond_emb_dim, out_dim*(2 if adaptive_scale else 1))
+
+        if affine:
+            self.pre_norm = Affine(in_dim)
+            self.post_norm = Affine(out_dim)
+        else:
+            self.pre_norm = nn.Identity()
+            self.post_norm = nn.Identity()
 
     def forward(self, x, time_emb=None, cond_emb=None):
         #print(x.shape, emb.shape)
         orig = x
         emb = torch.cat((time_emb, cond_emb), dim = -1)
-        params = nn.functional.silu(self.affine(emb).to(x.dtype))
+        params = nn.functional.silu(self.map_cond(emb).to(x.dtype))
+        x = self.pre_norm(x)
         if self.adaptive_scale:
             scale, shift = params.chunk(2, dim=-1)
             x = nn.functional.silu(torch.addcmul(shift, x, scale+1))
@@ -62,45 +89,47 @@ class CondResNetBlock(torch.nn.Module):
             x = nn.functional.silu(x.add_(params))
 
         x = self.linear(nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = self.post_norm(x)
         x = x.add_(orig)
         x = x * self.skip_scale
 
         return x
 
 class ResNet(torch.nn.Module):
-    def __init__(self, in_channels, out_channels,
-                label_dim           = 0,        # Number of class labels, 0 = unconditional.
-                augment_dim         = 0,        # Augmentation label dimensionality, 0 = no augmentation.
-                model_channels      = 128,      # Channel multiplier.
-                channel_mult        = [1,1,1,1],# Channel multiplier for each resblock layer.
-                channel_mult_emb    = 4,
+    def __init__(self, in_dim, out_dim,
+                model_dim      = 128,      # dim multiplier.
+                dim_mult        = [1,1,1,1],# dim multiplier for each resblock layer.
+                dim_mult_emb    = 4,
                 num_blocks          = 4,        # Number of resblocks(mid) per level.
                 dropout             = 0.,      # Dropout rate.
                 emb_type            = "sinusoidal",# Timestep embedding type
-                channel_mult_noise  = 1,        # Time embedding size
+                dim_mult_noise  = 1,        # Time embedding size
+                adaptive_scale  = True,     # Feature-wise transformations, FiLM
+                skip_scale      = 1.0,      # Skip connection scaling
+                affine          = False    # Affine normalization for MLP
                 ):
 
         super().__init__()
 
-        emb_channels = model_channels * channel_mult_emb
-        noise_channels = model_channels * channel_mult_noise
-        block_kwargs = dict(dropout = dropout, skip_scale=1.0, adaptive_scale=True)
+        emb_dim = model_dim * dim_mult_emb
+        noise_dim = model_dim * dim_mult_noise
+        block_kwargs = dict(dropout = dropout, skip_scale=skip_scale, adaptive_scale=adaptive_scale, affine=affine)
 
-        self.map_noise = PositionalEmbedding(size=noise_channels, type=emb_type)
-        self.map_layer = nn.Linear(noise_channels, emb_channels)
-        #self.map_layer1 = nn.Linear(emb_channels, emb_channels)
+        self.map_noise = PositionalEmbedding(size=noise_dim, type=emb_type)
+        self.map_layer = nn.Linear(noise_dim, emb_dim)
+        #self.map_layer1 = nn.Linear(emb_dim, emb_dim)
 
-        self.first_layer = nn.Linear(in_channels, model_channels)
+        self.first_layer = nn.Linear(in_dim, model_dim)
         self.blocks = nn.ModuleList()
-        cout = model_channels
-        for level, mult in enumerate(channel_mult):
+        cout = model_dim
+        for level, mult in enumerate(dim_mult):
             for _ in range(num_blocks):
                 cin = cout
-                cout = model_channels * mult
-                self.blocks.append(ResNetBlock(cin, cout, emb_channels, **block_kwargs))
-        self.final_layer = nn.Linear(cout, out_channels)
+                cout = model_dim * mult
+                self.blocks.append(ResNetBlock(cin, cout, emb_dim, **block_kwargs))
+        self.final_layer = nn.Linear(cout, out_dim)
 
-    def forward(self, x, noise_labels, class_labels=None, augment_labels=None):
+    def forward(self, x, noise_labels):
         # Mapping
         emb = self.map_noise(noise_labels)
         #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
@@ -114,43 +143,46 @@ class ResNet(torch.nn.Module):
 
 class CFGResNet(torch.nn.Module):
     # https://github.com/lucidrains/denoising-diffusion-pytorch/blob/main/denoising_diffusion_pytorch/classifier_free_guidance.py
-    def __init__(self, in_channels, out_channels, cond_size,
-                model_channels      = 128,      # Channel multiplier.
-                channel_mult        = [1,1,1,1],# Channel multiplier for each resblock layer.
-                channel_mult_emb    = 4,
+    def __init__(self, in_dim, out_dim, cond_size,
+                model_dim      = 128,      # dim multiplier.
+                dim_mult        = [1,1,1,1],# dim multiplier for each resblock layer.
+                dim_mult_emb    = 4,
                 num_blocks          = 4,        # Number of resblocks(mid) per level.
                 dropout             = 0.,      # Dropout rate.
                 emb_type            = "sinusoidal",# Timestep embedding type
-                channel_mult_time  = 1,        # Time embedding size
-                channel_mult_cond   = 1,        # Conditional embedding size
-                cond_drop_prob      = 0.0      # Probability of using null emb
+                dim_mult_time  = 1,        # Time embedding size
+                dim_mult_cond   = 1,        # Conditional embedding size
+                cond_drop_prob      = 0.0,      # Probability of using null emb
+                adaptive_scale  = True,     # Feature-wise transformations, FiLM
+                skip_scale      = 1.0,      # Skip connection scaling
+                affine          = False    # Affine normalization for MLP
                 ):
 
         super().__init__()
 
-        emb_channels = model_channels * channel_mult_emb
-        time_channels = model_channels * channel_mult_time
-        cond_channels = model_channels * channel_mult_cond
-        block_kwargs = dict(dropout = dropout, skip_scale=1.0, adaptive_scale=True)
+        emb_dim = model_dim * dim_mult_emb
+        time_dim = model_dim * dim_mult_time
+        cond_dim = model_dim * dim_mult_cond
+        block_kwargs = dict(dropout = dropout, skip_scale=skip_scale, adaptive_scale=adaptive_scale, affine=affine)
 
-        self.null_emb = nn.Parameter(torch.randn(emb_channels))
+        self.null_emb = nn.Parameter(torch.randn(emb_dim))
         self.cond_size = cond_size
         self.cond_drop_prob = cond_drop_prob
 
-        self.map_time = PositionalEmbedding(size=time_channels, type=emb_type)
-        self.map_cond = PositionalEmbedding(size=cond_channels, type=emb_type)
-        self.map_time_layer = nn.Linear(time_channels, emb_channels)
-        self.map_cond_layer = nn.Linear(cond_channels, emb_channels)
+        self.map_time = PositionalEmbedding(size=time_dim, type=emb_type)
+        self.map_cond = PositionalEmbedding(size=cond_dim, type=emb_type)
+        self.map_time_layer = nn.Linear(time_dim, emb_dim)
+        self.map_cond_layer = nn.Linear(cond_dim*cond_size, emb_dim)
 
-        self.first_layer = nn.Linear(in_channels, model_channels)
+        self.first_layer = nn.Linear(in_dim, model_dim)
         self.blocks = nn.ModuleList()
-        cout = model_channels
-        for level, mult in enumerate(channel_mult):
+        cout = model_dim
+        for level, mult in enumerate(dim_mult):
             for _ in range(num_blocks):
                 cin = cout
-                cout = model_channels * mult
-                self.blocks.append(CondResNetBlock(cin, cout, emb_channels, cond_channels, **block_kwargs))
-        self.final_layer = nn.Linear(cout, out_channels)
+                cout = model_dim * mult
+                self.blocks.append(CondResNetBlock(cin, cout, emb_dim, cond_dim, **block_kwargs))
+        self.final_layer = nn.Linear(cout, out_dim)
 
     def prob_mask_like(self, shape, prob, device):
         if prob == 1:
@@ -186,7 +218,7 @@ class CFGResNet(torch.nn.Module):
         cond_emb = self.map_cond(cond)
         #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
         time_emb = nn.functional.silu(self.map_time_layer(time_emb))
-        cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb))
+        cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb.reshape(cond_emb.shape[0], -1)))
         #emb = nn.functional.silu(self.map_layer1(emb))
         if cond_drop_prob == None:
             cond_drop_prob = self.cond_drop_prob
@@ -205,110 +237,144 @@ class CFGResNet(torch.nn.Module):
         x = self.final_layer(nn.functional.silu(x))
         return x
 
-class ResidualConv1DBlock(nn.Module):
-    def __init__(
-        self, in_channels: int, out_channels: int, is_res: bool = False
-    ) -> None:
-        super().__init__()
-        '''
-        standard ResNet style convolutional block
-        '''
-        self.same_channels = in_channels==out_channels
-        self.is_res = is_res
-        self.conv1 = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, 1, 1),
-            #nn.BatchNorm2d(out_channels),
-            nn.SiLU(),
-        )
-        self.conv2 = nn.Sequential(
-            nn.Conv1d(out_channels, out_channels, 1, 1),
-            #nn.BatchNorm2d(out_channels),
-            nn.SiLU(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.is_res:
-            x1 = self.conv1(x)
-            x2 = self.conv2(x1)
-            # this adds on correct residual in case channels have increased
-            if self.same_channels:
-                out = x + x2
-            else:
-                out = x1 + x2 
-            return out 
-        else:
-            x1 = self.conv1(x)
-            x2 = self.conv2(x1)
-            return x2
-
 class CtrlResNet(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, cond_size,
-                conv_channels       = 256,      # Channel multiplier.
-                model_channels      = 128,      # Channel multiplier.
-                channel_mult        = [1,1,1,1],# Channel multiplier for each resblock layer.
-                channel_mult_emb    = 4,
+    def __init__(self, in_dim, out_dim, cond_size,
+                model_dim      = 128,      # dim multiplier.
+                dim_mult        = [1,1,1,1],# dim multiplier for each resblock layer.
+                dim_mult_emb    = 4,
                 num_blocks          = 4,        # Number of resblocks(mid) per level.
                 dropout             = 0.,      # Dropout rate.
                 emb_type            = "sinusoidal",# Timestep embedding type
-                channel_mult_time  = 1,        # Time embedding size
-                channel_mult_cond   = 1,        # Conditional embedding size
+                dim_mult_time  = 1,        # Time embedding size
+                dim_mult_cond   = 1,        # Conditional embedding size
+                adaptive_scale  = True,     # Feature-wise transformations, FiLM
+                skip_scale      = 1.0,      # Skip connection scaling
+                affine          = False    # Affine normalization for MLP
                 ):
 
         super().__init__()
 
-        emb_channels = model_channels * channel_mult_emb
-        time_channels = model_channels * channel_mult_time
-        cond_channels = model_channels * channel_mult_cond
-        block_kwargs = dict(dropout = dropout, skip_scale=1.0, adaptive_scale=True)
+        emb_dim = model_dim * dim_mult_emb
+        time_dim = model_dim * dim_mult_time
+        cond_dim = model_dim * dim_mult_cond
+        block_kwargs = dict(dropout = dropout, skip_scale=skip_scale, adaptive_scale=adaptive_scale, affine=affine)
 
-        self.null_emb = nn.Parameter(torch.randn(emb_channels))
         self.cond_size = cond_size
 
-        self.map_time = PositionalEmbedding(size=time_channels, type=emb_type)
-        self.map_cond = PositionalEmbedding(size=cond_channels, type=emb_type)
-        self.map_time_layer = nn.Linear(time_channels, emb_channels)
-        self.map_cond_layer = nn.Linear(cond_channels, emb_channels) # Can also be used for the controlNet (replace Vec2Img)
+        self.map_time = PositionalEmbedding(size=time_dim, type=emb_type)
+        self.map_cond = PositionalEmbedding(size=cond_dim, type=emb_type)
+        self.map_time_layer = nn.Linear(time_dim, emb_dim)
+        self.map_cond_layer = nn.Linear(cond_dim*cond_size, emb_dim) # Can also be used for the controlNet (replace Vec2Img)
 
-        self.first_layer = nn.Linear(in_channels, model_channels)
+        self.first_layer = nn.Linear(in_dim, model_dim)
         self.blocks = nn.ModuleList()
-        cout = model_channels
+        cout = model_dim
+        self.numblock = num_blocks
 
         self.ctrlBlocks = nn.ModuleList()
-        self.ctrlOutBlocks = nn.ModuleList()
-        self.ctrl_init_conv = zero_module(nn.Conv1d(1, conv_channels, 1))
+        self.ctrl_cond_encoder = CondResNetBlock(emb_dim, emb_dim, emb_dim, emb_dim, **block_kwargs)
 
-        for level, mult in enumerate(channel_mult):
+        for level, mult in enumerate(dim_mult):
             for _ in range(num_blocks):
                 cin = cout
-                cout = model_channels * mult
-                self.blocks.append(ResNetBlock(cin, cout, emb_channels, **block_kwargs))
-                self.ctrlBlocks.append(zero_module(nn.Conv1d(conv_channels, conv_channels, 1)))
-                self.ctrlOutBlocks.append(nn.Sequential(zero_module(nn.Conv1d(conv_channels, 1, 1)),
+                cout = model_dim * mult
+                self.blocks.append(ResNetBlock(cin, cout, emb_dim, **block_kwargs))
+                '''
+                self.ctrlBlocks.append(zero_module(nn.Conv1d(conv_dim, conv_dim, 1)))
+                self.ctrlOutBlocks.append(nn.Sequential(zero_module(nn.Conv1d(conv_dim, 1, 1)),
                                                         nn.Flatten(),
                                                         nn.SiLU()))
-        self.final_layer = nn.Linear(cout, out_channels)
+                '''
+            self.ctrlBlocks.append(zero_module(CondResNetBlock(cin, cout, emb_dim, emb_dim, **block_kwargs)))
+        self.final_layer = nn.Linear(cout, out_dim)
 
     def forward(self, x, cond, time, context_mask=None, controlnet=False):
-        if context_mask is not None:
-            cond = cond*context_mask
         # Mapping
         time_emb = self.map_time(time)
         cond_emb = self.map_cond(cond)
         #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
         time_emb = nn.functional.silu(self.map_time_layer(time_emb))
-        cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb))
+        cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb.reshape(cond_emb.shape[0], -1)))
         #emb = nn.functional.silu(self.map_layer1(emb))
 
         x = self.first_layer(x)
         if controlnet:
-            ctrl_cond = self.ctrl_init_conv(rearrange(cond_emb, 'b d -> b 1 d'))
-            for block, ctrlBlock, ctrlOutBlock in zip(self.blocks, self.ctrlBlocks, self.ctrlOutBlocks):
+            ctrl_cond = self.ctrl_cond_encoder(x, time_emb, cond_emb)
+            for level, block in enumerate(self.blocks):
                 x = block(x, time_emb)
-                ctrl_cond = ctrlBlock(ctrl_cond)
-                ctrl_out =  ctrlOutBlock(ctrl_cond)
-                x += ctrl_out
+                if level % self.numblock == 0 and level !=0:
+                    ctrl_cond = self.ctrlBlocks[int(level/self.numblock)](ctrl_cond, time_emb, cond_emb)
+                    x += ctrl_cond
         else:
             for block in self.blocks:
                 x = block(x, time_emb)
+        x = self.final_layer(nn.functional.silu(x))
+        return x
+
+class CtrlCondResNet(torch.nn.Module):
+    def __init__(self, in_dim, out_dim, cond_size,
+                model_dim      = 128,      # dim multiplier.
+                dim_mult        = [1,1,1,1],# dim multiplier for each resblock layer.
+                dim_mult_emb    = 4,
+                num_blocks          = 4,        # Number of resblocks(mid) per level.
+                dropout             = 0.,      # Dropout rate.
+                emb_type            = "sinusoidal",# Timestep embedding type
+                dim_mult_time  = 1,        # Time embedding size
+                dim_mult_cond   = 1,        # Conditional embedding size
+                adaptive_scale  = True,     # Feature-wise transformations, FiLM
+                skip_scale      = 1.0,      # Skip connection scaling
+                affine          = False    # Affine normalization for MLP
+                ):
+
+        super().__init__()
+
+        emb_dim = model_dim * dim_mult_emb
+        time_dim = model_dim * dim_mult_time
+        cond_dim = model_dim * dim_mult_cond
+        block_kwargs = dict(dropout = dropout, skip_scale=skip_scale, adaptive_scale=adaptive_scale, affine=affine)
+
+        self.cond_size = cond_size
+
+        self.map_time = PositionalEmbedding(size=time_dim, type=emb_type)
+        self.map_cond = PositionalEmbedding(size=cond_dim, type=emb_type)
+        self.map_time_layer = nn.Linear(time_dim, emb_dim)
+        self.map_cond_layer = nn.Linear(cond_dim*cond_size, emb_dim) # Can also be used for the controlNet (replace Vec2Img)
+
+        self.first_layer = nn.Linear(in_dim, model_dim)
+        self.blocks = nn.ModuleList()
+        cout = model_dim
+        self.numblock = num_blocks
+
+        self.ctrlBlocks = nn.ModuleList()
+        self.ctrl_cond_encoder = CondResNetBlock(emb_dim, emb_dim, emb_dim, emb_dim, **block_kwargs)
+
+        for level, mult in enumerate(dim_mult):
+            for _ in range(num_blocks):
+                cin = cout
+                cout = model_dim * mult
+                self.blocks.append(CondResNetBlock(cin, cout, emb_dim, emb_dim, **block_kwargs))
+            self.ctrlBlocks.append(zero_module(CondResNetBlock(cin, cout, emb_dim, emb_dim, **block_kwargs)))
+        self.final_layer = nn.Linear(cout, out_dim)
+
+    def forward(self, x, cond, time, context_mask=None, controlnet=False):
+        # Mapping
+        time_emb = self.map_time(time)
+        cond_emb = self.map_cond(cond)
+        #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
+        time_emb = nn.functional.silu(self.map_time_layer(time_emb))
+        cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb.reshape(cond_emb.shape[0], -1)))
+        #emb = nn.functional.silu(self.map_layer1(emb))
+
+        x = self.first_layer(x)
+        if controlnet:
+            ctrl_cond = self.ctrl_cond_encoder(x, time_emb, cond_emb)
+            for level, block in enumerate(self.blocks):
+                x = block(x, time_emb, cond_emb)
+                if level % self.numblock == 0 and level !=0:
+                    ctrl_cond = self.ctrlBlocks[int(level/self.numblock)](ctrl_cond, time_emb, cond_emb)
+                    x += ctrl_cond
+        else:
+            for block in self.blocks:
+                x = block(x, time_emb, cond_emb)
         x = self.final_layer(nn.functional.silu(x))
         return x

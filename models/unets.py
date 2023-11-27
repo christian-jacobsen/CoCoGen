@@ -25,6 +25,19 @@ sys.path.append("/home/csjacobs/git/diffusionPDE")
 
 from utils import instantiate_from_config, zero_module
 
+class GroupNorm(torch.nn.Module):
+    #https://github.com/Newbeeer/pfgmpp/blob/d57c1ee4488d8e4064a5b9c8548792f00395aa8b/training/networks.py#L114
+    def __init__(self, num_channels, num_groups=32, min_channels_per_group=4, eps=1e-5):
+        super().__init__()
+        self.num_groups = min(num_groups, num_channels // min_channels_per_group)
+        self.eps = eps
+        self.weight = torch.nn.Parameter(torch.ones(num_channels))
+        self.bias = torch.nn.Parameter(torch.zeros(num_channels))
+
+    def forward(self, x):
+        x = torch.nn.functional.group_norm(x, num_groups=self.num_groups, weight=self.weight.to(x.dtype), bias=self.bias.to(x.dtype), eps=self.eps)
+        return x
+
 class ResidualConvBlock(nn.Module):
     def __init__(
         self, in_channels: int, out_channels: int, is_res: bool = False
