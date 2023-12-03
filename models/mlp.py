@@ -223,12 +223,12 @@ class CFGResNet(torch.nn.Module):
         if cond_drop_prob == None:
             cond_drop_prob = self.cond_drop_prob
         if cond_drop_prob > 0:
-            keep_mask = self.prob_mask_like((batch_size,), 1 - self.cond_drop_prob, device = x.device)
+            keep_mask = self.prob_mask_like((batch_size,), 1 - cond_drop_prob, device = x.device)
             null_cond_emb = repeat(self.null_emb, 'd -> b d', b = batch_size) 
 
-            c_emb = torch.where(
+            cond_emb = torch.where(
                 rearrange(keep_mask, 'b -> b 1'),
-                c_emb,
+                cond_emb,
                 null_cond_emb
             )
         x = self.first_layer(x)

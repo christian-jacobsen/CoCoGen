@@ -21,6 +21,8 @@ import os
 import os.path as osp
 import argparse
 
+from einops import rearrange, repeat
+
 sys.path.append("/home/csjacobs/git/diffusionPDE")
 
 from utils import instantiate_from_config, zero_module
@@ -36,6 +38,186 @@ class GroupNorm(torch.nn.Module):
 
     def forward(self, x):
         x = torch.nn.functional.group_norm(x, num_groups=self.num_groups, weight=self.weight.to(x.dtype), bias=self.bias.to(x.dtype), eps=self.eps)
+        return x
+
+class ResConv2DBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding =1, time_emb_dim=None, cond_emb_dim=None, 
+                 dropout=0, skip_scale=1, adaptive_scale=True, groups=8, normalization=True):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.emb_dim = time_emb_dim
+        self.dropout = dropout
+        self.skip_scale = skip_scale
+        self.adaptive_scale = adaptive_scale
+        if normalization:
+            self.norm1 = GroupNorm(num_channels=in_channels, num_groups=groups) 
+            self.norm2 = GroupNorm(num_channels=out_channels, num_groups=groups)
+        else:
+            self.norm1 = nn.Identity()
+            self.norm2 = nn.Identity()
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding) 
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel_size, padding=padding)
+        self.map_cond = nn.Linear(int(time_emb_dim)+int(cond_emb_dim), out_channels*(2 if adaptive_scale else 1))
+        self.res_conv = nn.Conv2d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+
+    def forward(self, x, cond_emb):
+        orig = x
+        x = self.conv1(nn.functional.silu(self.norm1(x)))
+        params = self.map_cond(cond_emb).to(x.dtype)
+        params = rearrange(params, 'b c -> b c 1 1')
+        if self.adaptive_scale:
+            scale, shift = params.chunk(2, dim=1)
+            x = nn.functional.silu(torch.addcmul(shift, self.norm2(x), scale+1))
+        else:
+            x = nn.functional.silu(self.norm2(x.add_(params)))
+
+        x = self.conv2(nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = x.add_(self.res_conv(orig))
+        x = x * self.skip_scale
+
+        return x
+
+def Upsample(in_channels, out_channels, kernel_size=2, stride=2, padding=0):
+    '''
+    Input: (N, C_in, H_in, W_in)
+    H_out = ((H_in - 1)*stride[0] - 2*padding[0] + dilation[0]*(kernel_size[0]-1) + output_padding[0] + 1)
+    W_out = ((W_in - 1)*stride[1] - 2*padding[1] + dilation[1]*(kernel_size[1]-1) + output_padding[1] + 1)
+    '''
+    return nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding)
+
+def Downsample(in_channels, out_channels, kernel_size=4, stride=2, padding=1):
+    '''
+    Input: (N, C_in, H_in, W_in)
+    H_out = ((H_in + 2*padding[0] - dilation[0]*(kernel_size[0]-1) - 1)/stride[0] + 1) 
+    W_out = ((W_in + 2*padding[1] - dilation[1]*(kernel_size[1]-1) - 1)/stride[1] + 1) 
+    '''
+    return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+
+class CFGUNet(nn.Module):
+    #https://github.com/Newbeeer/pfgmpp/blob/d57c1ee4488d8e4064a5b9c8548792f00395aa8b/training/networks.py#L250
+    def __init__(self,
+        dim,                                # Dimensionality of the data. 
+        in_channels         = 3,            # Number of color channels at input.
+        out_channels        = 3,            # Number of color channels at output.
+        kernel_size         = 3,            # Kernel size for convolution block.
+        padding             = 1,            # Padding for convolution block.
+        cond_size           = 0,            # Number of condition, 0 = unconditional.
+
+        model_channels      = 128,          # Base multiplier for the number of channels.
+        channel_mult        = [1,2,2,2],    # Per-resolution multipliers for the number of channels.
+        channel_mult_emb    = 4,            # Multiplier for the dimensionality of the embedding vector.
+        num_blocks          = 4,            # Number of residual blocks per resolution.
+        #attn_resolutions    = [16],         # List of resolutions with self-attention.
+        dropout             = 0.10,         # Dropout probability of intermediate activations.
+        cond_drop_prob      = 0,            # Dropout probability of conditions for classifier-free guidance.
+        #emb_type            = 'sinusoidal', # Type of positional embedding to use for the image.
+        dim_mult_time       = 1,            # Time embedding multiplier for the noise level.
+        adaptive_scale      = True,         # Scale shift
+        skip_scale          = 1,            # Scale of the residual connection.
+        groups              = 8            # Number of groups for group normalization.
+        ):
+        super().__init__()
+
+        self.cond_drop_prob = cond_drop_prob
+        emb_channels = model_channels * channel_mult_emb
+        time_dim = model_channels * dim_mult_time
+
+        self.null_emb = nn.Parameter(torch.randn(time_dim))
+        self.map_time = EmbedFC(1, time_dim)
+        self.map_cond = EmbedFC(cond_size, time_dim) if cond_size else None
+        self.map_time_layer = nn.Linear(time_dim, emb_channels)
+        self.map_cond_layer = nn.Linear(time_dim, emb_channels) if cond_size else None
+
+        block_kwargs = dict(kernel_size=kernel_size, padding=padding, time_emb_dim = emb_channels, cond_emb_dim = emb_channels, dropout = dropout, skip_scale=skip_scale,
+                        adaptive_scale=adaptive_scale, groups=groups, normalization=True)
+
+        # Encoder.
+        self.enc = torch.nn.ModuleDict()
+        cout = in_channels
+        #caux = in_channels
+        for level, mult in enumerate(channel_mult):
+            res = dim >> level
+            if level == 0:
+                cin = cout
+                cout = model_channels
+                self.enc[f'{res}_init_conv'] = nn.Conv2d(in_channels=cin, out_channels=cout, kernel_size=3, padding=1)
+            else:
+                self.enc[f'{res}_conv_down'] = Downsample(in_channels=cout, out_channels=cout)
+            for idx in range(num_blocks):
+                cin = cout
+                cout = model_channels * mult
+                #attn = (res in attn_resolutions)
+                self.enc[f'{res}_conv_block{idx}'] = ResConv2DBlock(in_channels=cin, out_channels=cout, **block_kwargs)
+        skips = [block.out_channels for name, block in self.enc.items() if 'aux' not in name]
+
+        # Decoder.
+        self.dec = torch.nn.ModuleDict()
+        for level, mult in reversed(list(enumerate(channel_mult))):
+            res = dim >> level
+            if level == len(channel_mult) - 1:
+                #self.dec[f'{res}_in0'] = ResConv2DBlock(in_channels=cout, out_channels=cout, attention=True, **block_kwargs)
+                self.dec[f'{res}_in0'] = ResConv2DBlock(in_channels=cout, out_channels=cout, **block_kwargs)
+                self.dec[f'{res}_in1'] = ResConv2DBlock(in_channels=cout, out_channels=cout, **block_kwargs)
+            else:
+                self.dec[f'{res}x{res}_up'] = Upsample(in_channels=cout, out_channels=cout)
+            for idx in range(num_blocks+1):
+                cin = cout + skips.pop()
+                cout = model_channels * mult
+                #attn = (idx == num_blocks and res in attn_resolutions)
+                self.dec[f'{res}_block{idx}'] = ResConv2DBlock(in_channels=cin, out_channels=cout, **block_kwargs)
+        self.final_norm = GroupNorm(num_channels=cout, num_groups=groups, eps=1e-5)
+        self.final_conv = nn.Conv2d(in_channels=cout, out_channels=out_channels, kernel_size=3, padding=1)
+
+    def prob_mask_like(self, shape, prob, device):
+        if prob == 1:
+            return torch.ones(shape, device = device, dtype = torch.bool)
+        elif prob == 0:
+            return torch.zeros(shape, device = device, dtype = torch.bool)
+        else:
+            return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
+
+    def forward(self, x, cond, time, cond_drop_prob = None):
+        # Mapping.
+        batch_size = x.shape[0]
+        # Mapping
+        time_emb = self.map_time(time)
+        #emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # why swap emb (sin/cos)?
+        time_emb = nn.functional.silu(self.map_time_layer(time_emb))
+        if self.map_cond is not None:
+            cond_emb = self.map_cond(cond)
+            cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb.reshape(cond_emb.shape[0], -1)))
+            emb = torch.cat((time_emb, cond_emb), dim=-1)
+            if cond_drop_prob == None:
+                cond_drop_prob = self.cond_drop_prob
+            if cond_drop_prob > 0:
+                keep_mask = self.prob_mask_like((batch_size,), 1 - cond_drop_prob, device = x.device)
+                null_cond_emb = repeat(self.null_emb, 'd -> b d', b = batch_size) 
+
+                cond_emb = torch.where(
+                    rearrange(keep_mask, 'b -> b 1'),
+                    cond_emb,
+                    null_cond_emb
+                )
+        else:
+            emb = time_emb
+
+        # Encoder.
+        skips = []
+        for name, block in self.enc.items():
+            x = block(x, emb) if isinstance(block, ResConv2DBlock) else block(x)
+            skips.append(x)
+
+        # Decoder.
+        for name, block in self.dec.items():
+            if x.shape[1] != block.in_channels:
+                #print('x shape: ', x.shape)
+                x = torch.cat([x, skips.pop()], dim=1)
+            x = block(x, emb) if isinstance(block, ResConv2DBlock) else block(x)
+
+        x = self.final_conv(self.final_norm(x))
+
         return x
 
 class ResidualConvBlock(nn.Module):
