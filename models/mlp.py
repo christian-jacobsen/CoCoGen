@@ -27,7 +27,9 @@ class ResNetBlock(torch.nn.Module):
         self.skip_scale = skip_scale
         self.adaptive_scale = adaptive_scale
 
-        self.linear = nn.Linear(in_dim, out_dim)
+        self.linear1 = nn.Linear(in_dim, out_dim)
+        self.linear2 = nn.Linear(out_dim, out_dim)
+        self.res_linear = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
         self.map_cond = nn.Linear(time_emb_dim, out_dim*(2 if adaptive_scale else 1))
 
         if affine:
@@ -42,15 +44,16 @@ class ResNetBlock(torch.nn.Module):
         orig = x
         params = nn.functional.silu(self.map_cond(time_emb).to(x.dtype))
         x = self.pre_norm(x)
+        x = self.linear1(nn.functional.silu(x))
         if self.adaptive_scale:
             scale, shift = params.chunk(2, dim=-1)
             x = nn.functional.silu(torch.addcmul(shift, x, scale+1))
         else:
             x = nn.functional.silu(x.add_(params))
 
-        x = self.linear(nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = self.linear2(nn.functional.dropout(x, p=self.dropout, training=self.training))
         x = self.post_norm(x)
-        x = x.add_(orig)
+        x = x.add_(self.res_linear(orig))
         x = x * self.skip_scale
 
         return x
@@ -66,7 +69,9 @@ class CondResNetBlock(torch.nn.Module):
         self.skip_scale = skip_scale
         self.adaptive_scale = adaptive_scale
 
-        self.linear = nn.Linear(in_dim, out_dim)
+        self.linear1 = nn.Linear(in_dim, out_dim)
+        self.linear2 = nn.Linear(out_dim, out_dim)
+        self.res_linear = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
         self.map_cond = nn.Linear(time_emb_dim+cond_emb_dim, out_dim*(2 if adaptive_scale else 1))
 
         if affine:
@@ -82,15 +87,16 @@ class CondResNetBlock(torch.nn.Module):
         emb = torch.cat((time_emb, cond_emb), dim = -1)
         params = nn.functional.silu(self.map_cond(emb).to(x.dtype))
         x = self.pre_norm(x)
+        x = self.linear1(nn.functional.silu(x))
         if self.adaptive_scale:
             scale, shift = params.chunk(2, dim=-1)
             x = nn.functional.silu(torch.addcmul(shift, x, scale+1))
         else:
             x = nn.functional.silu(x.add_(params))
 
-        x = self.linear(nn.functional.dropout(x, p=self.dropout, training=self.training))
+        x = self.linear2(nn.functional.dropout(x, p=self.dropout, training=self.training))
         x = self.post_norm(x)
-        x = x.add_(orig)
+        x = x.add_(self.res_linear(orig))
         x = x * self.skip_scale
 
         return x
@@ -181,7 +187,7 @@ class CFGResNet(torch.nn.Module):
             for _ in range(num_blocks):
                 cin = cout
                 cout = model_dim * mult
-                self.blocks.append(CondResNetBlock(cin, cout, emb_dim, cond_dim, **block_kwargs))
+                self.blocks.append(CondResNetBlock(cin, cout, emb_dim, emb_dim, **block_kwargs))
         self.final_layer = nn.Linear(cout, out_dim)
 
     def prob_mask_like(self, shape, prob, device):
