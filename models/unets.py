@@ -220,6 +220,77 @@ class CFGUNet(nn.Module):
 
         return x
 
+class PFGMPPUNet(torch.nn.Module):
+    def __init__(self,
+        dim,                                # Dimensionality of the data. 
+        in_channels         = 3,            # Number of color channels at input.
+        out_channels        = 3,            # Number of color channels at output.
+        kernel_size         = 3,            # Kernel size for convolution block.
+        padding             = 1,            # Padding for convolution block.
+        cond_size           = 0,            # Number of condition, 0 = unconditional.
+
+        model_channels      = 128,          # Base multiplier for the number of channels.
+        channel_mult        = [1,2,2,2],    # Per-resolution multipliers for the number of channels.
+        channel_mult_emb    = 4,            # Multiplier for the dimensionality of the embedding vector.
+        num_blocks          = 4,            # Number of residual blocks per resolution.
+        #attn_resolutions    = [16],         # List of resolutions with self-attention.
+        dropout             = 0.10,         # Dropout probability of intermediate activations.
+        cond_drop_prob      = 0,            # Dropout probability of conditions for classifier-free guidance.
+        #emb_type            = 'sinusoidal', # Type of positional embedding to use for the image.
+        dim_mult_time       = 1,            # Time embedding multiplier for the noise level.
+        adaptive_scale      = True,         # Scale shift
+        skip_scale          = 1,            # Scale of the residual connection.
+        groups              = 8,            # Number of groups for group normalization.
+        pfgmpp=False,
+        D = 128,
+        use_fp16        = False,            # Execute the underlying model at FP16 precision?
+        sigma_min       = 0,                # Minimum supported noise level.
+        sigma_max       = float('inf'),     # Maximum supported noise level.
+        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        model_type      = 'CFGUNet',   # Class name of the underlying model.
+        **model_kwargs,                     # Keyword arguments for the underlying model.
+    ):
+        super().__init__()
+        self.in_inchannels = in_channels
+        self.out_channels = out_channels
+        self.D = D
+        self.N = in_channels*dim*dim
+        self.label_dim = cond_size
+        self.pfgmpp = pfgmpp
+        self.use_fp16 = use_fp16
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        ###########
+        self.model = globals()[model_type](dim, in_channels=self.in_inchannels, out_channels=self.out_channels, kernel_size=kernel_size, padding=padding, cond_size=cond_size,
+                                           model_channels=model_channels, channel_mult=channel_mult, channel_mult_emb=channel_mult_emb, num_blocks=num_blocks,
+                                           dropout=dropout, cond_drop_prob=cond_drop_prob, dim_mult_time=dim_mult_time, adaptive_scale=adaptive_scale, skip_scale=skip_scale, groups=groups,
+                                           **model_kwargs)
+
+    def forward(self, x, sigma, class_labels=None, force_fp32=False,  **model_kwargs):
+
+        x = x.to(torch.float32)
+
+        sigma = sigma.to(torch.float32).reshape(-1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim],
+                                                                    device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        x_in = c_in * x
+        F_x = self.model((x_in).to(dtype), class_labels, c_noise.flatten(), **model_kwargs)
+
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+
 class ResidualConvBlock(nn.Module):
     def __init__(
         self, in_channels: int, out_channels: int, is_res: bool = False

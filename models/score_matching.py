@@ -10,6 +10,8 @@ import sys
 from einops import rearrange, repeat
 from torchvision.utils import make_grid
 
+from pfgmpp import StackedRandomGenerator, edm_sampler
+
 sys.path.append("/home/csjacobs/git/diffusionPDE")
 
 from utils import instantiate_from_config
@@ -31,7 +33,7 @@ class DiffusionSDE(pl.LightningModule):
 
         self.unet = instantiate_from_config(unet_config)
         self.sde = instantiate_from_config(sde_config)
-        self.sampler = instantiate_from_config(sampler_config)
+        #self.sampler = instantiate_from_config(sampler_config)
         self.residual = instantiate_from_config(residual_config)
         self.eps = eps
         self.lr = lr
@@ -179,4 +181,122 @@ class DiffusionSDE(pl.LightningModule):
         params = list(self.unet.parameters())
         return torch.optim.AdamW(params, lr=lr)
 
+class DiffusionPFGMPP(pl.LightningModule):
+    # base class for training a score-matching objective
+    def __init__(self,
+                 unet_config,
+                 loss_fn_config,
+                 sampler_config,
+                 residual_config,
+                 eps=1e-5,
+                 elbo_weight=0.,
+                 log_every_t=50,
+                 lr=1e-4,
+                 ignore_keys=[],
+                 ckpt_path=None):
+        super().__init__()
 
+        self.unet = instantiate_from_config(unet_config)
+        self.loss_fn = instantiate_from_config(loss_fn_config)
+        self.sampler = instantiate_from_config(sampler_config)
+        self.residual = instantiate_from_config(residual_config)
+        self.eps = eps
+        self.lr = lr
+        self.elbo_weight = elbo_weight
+        self.log_every_t = log_every_t
+
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+
+    def init_from_ckpt(self, path, ignore_keys=list()):
+        params = torch.load(path, map_location='cpu')
+        if "state_dict" in list(params.keys()):
+            params = params["state_dict"]
+        keys = list(params.keys())
+        for k in keys:
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    print("Deleting key {} from state_dict.".format(k))
+                    del params[k]
+
+        missing, unexpected = self.load_state_dict(params, strict=False)
+        print(f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys")
+        if len(missing) > 0:
+            print(f"Missing keys: {missing}")
+        if len(unexpected) > 0:
+            print(f"Unexpected keys: {unexpected}")
+
+    def forward(self, x, c):
+        loss_dict = {}
+        log_prefix = 'train' if self.training else 'val'
+        # score-mathcing objective function
+        score_loss = self.loss_fn(self.unet, x, labels=c, augment_pipe=None, stf=False, pfgmpp=self.unet.pfgmpp)
+        loss_dict.update({f'{log_prefix}/loss_score': score_loss.mean()})
+        return score_loss.mean(), loss_dict
+
+    def training_step(self, batch):
+        x, c = self.get_input(batch)
+        loss, loss_dict = self.forward(x, c)
+
+        self.log_dict(loss_dict, prog_bar=True,
+                      logger=True, on_step=True, on_epoch=True)
+
+        self.log("global_step", self.global_step,
+                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+        return loss
+
+    def get_input(self, batch):
+        x, c = batch
+        return x, c
+
+    @torch.no_grad()
+    def sample(self, batch_size=8, c=None):
+        rnd = StackedRandomGenerator(self.device, range(batch_size))
+        if self.unet.pfgmpp:
+            latents = rnd.rand_beta_prime([batch_size, self.unet.in_channels, self.unet.dim, self.unet.dim],
+                                          N = self.unet.N, D = self.unet.D, pfgmpp=self.unet.pfgmpp, device=self.device,
+                                          sigma_max=self.sampler_config['sigma_max'] if (self.unet.N > 256 * 256 * 3) else 80)
+                                          #sigma_max=80)
+        else:
+            latents = rnd.randn([batch_size, self.unet.in_channels, self.unet.dim, self.unet.dim], device=self.device)
+        return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like, pfgmpp=self.unet.pfgmpp, **self.sampler_config)
+
+    @torch.no_grad()
+    def log_images(self, batch, N=8, n_row=2, sample=True):
+        log = dict()
+
+        # log samples
+        x0, c = self.get_input(batch)
+        N = min(x0.shape[0], N)
+        x0 = x0.to(self.device)[:N]
+        log["inputs"] = x0
+
+        # backward sampling (denoising)
+        start_time = time.time()
+        samples, intermediates = self.sample(batch_size=N, c=c)
+        end_time = time.time()
+        log["samples"] = samples
+        
+        p = samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+        k = samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+        residual, _, _, _, _, _, _ = self.residual.r_diff(p, k)
+
+        self.log("physics_residual_l2_norm", torch.mean(residual**2),
+                 prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log("sample time", end_time-start_time, logger=True, prog_bar=True,
+                 on_step=False, on_epoch=True)
+
+        return log
+
+    def _get_rows_from_list(self, samples):
+        n_per_row = len(samples)
+        grid = rearrange(samples, 'n b c h w -> b n c h w')
+        grid = rearrange(grid, 'b n c h w -> (b n) c h w')
+        grid = make_grid(grid, nrow=n_per_row)
+        return grid
+
+    def configure_optimizers(self):
+        lr = self.lr
+        params = list(self.unet.parameters())
+        return torch.optim.AdamW(params, lr=lr)

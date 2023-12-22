@@ -1,83 +1,19 @@
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# This work is licensed under a Creative Commons
+# Attribution-NonCommercial-ShareAlike 4.0 International License.
+# You should have received a copy of the license along with this
+# work. If not, see http://creativecommons.org/licenses/by-nc-sa/4.0/
+
 import torch
+from torch.distributions import Beta
 import numpy as np
 from scipy.stats import betaprime
+from einops import repeat
 #----------------------------------------------------------------------------
 # Loss function corresponding to the variance preserving (VP) formulation
 # from the paper "Score-Based Generative Modeling through Stochastic
 # Differential Equations".
-
-class VPLoss:
-    def __init__(self, beta_d=19.9, beta_min=0.1, epsilon_t=1e-5):
-        self.beta_d = beta_d
-        self.beta_min = beta_min
-        self.epsilon_t = epsilon_t
-
-    def __call__(self, net, images, labels, augment_pipe=None):
-        rnd_uniform = torch.rand([images.shape[0], 1], device=images.device)
-        sigma = self.sigma(1 + rnd_uniform * (self.epsilon_t - 1))
-        weight = 1 / sigma ** 2
-        y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
-        n = torch.randn_like(y) * sigma
-        D_yn = net(y + n, sigma, labels, augment_labels=augment_labels)
-        loss = weight * ((D_yn - y) ** 2)
-        return loss
-
-    def sigma(self, t):
-        t = torch.as_tensor(t)
-        return ((0.5 * self.beta_d * (t ** 2) + self.beta_min * t).exp() - 1).sqrt()
-
-#----------------------------------------------------------------------------
-# Loss function corresponding to the variance exploding (VE) formulation
-# from the paper "Score-Based Generative Modeling through Stochastic
-# Differential Equations".
-
-class VELoss:
-    def __init__(self, sigma_min=0.02, sigma_max=100, D=128, N=3072, opts=None):
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-        self.D = D
-        self.N = N
-        print(f"In VE loss: D:{self.D}, N:{self.N}")
-
-    def __call__(self, net, images, labels, augment_pipe=None, stf=False, pfgmpp=False, ref_images=None):
-        if pfgmpp:
-            rnd_uniform = torch.rand(images.shape[0], device=images.device)
-            sigma = self.sigma_min * ((self.sigma_max / self.sigma_min) ** rnd_uniform)
-
-            r = sigma.double() * np.sqrt(self.D).astype(np.float64)
-            # Sampling form inverse-beta distribution
-            samples_norm = np.random.beta(a=self.N / 2., b=self.D / 2.,
-                                          size=images.shape[0]).astype(np.double)
-
-            samples_norm = np.clip(samples_norm, 1e-3, 1-1e-3)
-
-            inverse_beta = samples_norm / (1 - samples_norm + 1e-8)
-            inverse_beta = torch.from_numpy(inverse_beta).to(images.device).double()
-            # Sampling from p_r(R) by change-of-variable
-            samples_norm = r * torch.sqrt(inverse_beta + 1e-8)
-            samples_norm = samples_norm.view(len(samples_norm), -1)
-            # Uniformly sample the angle direction
-            gaussian = torch.randn(images.shape[0], self.N).to(samples_norm.device)
-            unit_gaussian = gaussian / torch.norm(gaussian, p=2, dim=1, keepdim=True)
-            # Construct the perturbation for x
-            perturbation_x = unit_gaussian * samples_norm
-            perturbation_x = perturbation_x.float()
-
-            sigma = sigma.reshape((len(sigma), 1))
-            weight = 1 / sigma ** 2
-            y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
-            n = perturbation_x.view_as(y)
-            D_yn = net(y + n, sigma, labels,  augment_labels=augment_labels)
-        else:
-            rnd_uniform = torch.rand([images.shape[0], 1], device=images.device)
-            sigma = self.sigma_min * ((self.sigma_max / self.sigma_min) ** rnd_uniform)
-            weight = 1 / sigma ** 2
-            y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
-            n = torch.randn_like(y) * sigma
-            D_yn = net(y + n, sigma, labels, augment_labels=augment_labels)
-
-        loss = weight * ((D_yn - y) ** 2)
-        return loss
 
 class EDMLoss:
     def __init__(self, P_mean=-1.2, P_std=1.2, sigma_data=0.5, D=128, N=3072, gamma=5, opts=None):
@@ -119,14 +55,14 @@ class EDMLoss:
             perturbation_x = unit_gaussian * samples_norm
             perturbation_x = perturbation_x.float()
 
-            sigma = sigma.reshape((len(sigma), 1))
+            sigma = sigma.reshape((len(sigma), 1, 1, 1))
 
             weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
             y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
             n = perturbation_x.view_as(y)
-            D_yn = net(y + n, sigma)
+            D_yn = net(y + n, sigma, labels)
         else:
-            rnd_normal = torch.randn([images.shape[0], 1], device=images.device)
+            rnd_normal = torch.randn([images.shape[0], 1, 1, 1], device=images.device)
             sigma = (rnd_normal * self.P_std + self.P_mean).exp()
             #if self.opts.lsun:
                 # use larger sigma for high-resolution datasets
@@ -134,7 +70,7 @@ class EDMLoss:
             weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
             y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
             n = torch.randn_like(y) * sigma
-            D_yn = net(y + n, sigma)
+            D_yn = net(y + n, sigma, labels)
 
         if stf:
             ref_images[len(y):], augment_labels_2 = augment_pipe(ref_images[len(y):]) \
@@ -253,3 +189,115 @@ class EDMLoss:
         perturbation_x = perturbation_x.float()
 
         return samples + perturbation_x.view_as(samples)
+
+def edm_sampler(
+    net, latents, class_labels=None, randn_like=torch.randn_like,
+    num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
+    S_churn=0, S_min=0, S_max=float('inf'), S_noise=0,
+    pfgmpp=False,
+):
+
+    N = net.N
+    # Adjust noise levels based on what's supported by the network.
+    sigma_min = max(sigma_min, net.sigma_min)
+    sigma_max = min(sigma_max, net.sigma_max)
+
+    # Time step discretization.
+    step_indices = torch.arange(num_steps, dtype=torch.float64, device=latents.device)
+    t_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (
+                sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    t_steps = torch.cat([net.round_sigma(t_steps), torch.zeros_like(t_steps[:1])])  # t_N = 0
+
+    if pfgmpp:
+        x_next = latents.to(torch.float64)
+    else:
+        x_next = latents.to(torch.float64) * t_steps[0]
+
+    whole_trajectory = torch.zeros((num_steps, *x_next.shape), dtype=torch.float64)
+    # Main sampling loop.
+    for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):  # 0, ..., N-1
+
+        x_cur = x_next
+        # Increase noise temporarily.
+        gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
+        t_hat = net.round_sigma(t_cur + gamma * t_cur)
+        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur)
+        # Euler step.
+        denoised = net(x_hat, repeat(t_hat.reshape(-1), 'w -> h w', h=x_hat.shape[0]), class_labels).to(torch.float64)
+        d_cur = (x_hat - denoised) / t_hat
+        x_next = x_hat + (t_next - t_hat) * d_cur
+
+        # Apply 2nd order correction.
+        if i < num_steps - 1:
+            denoised = net(x_next, repeat(t_next.reshape(-1), 'w -> h w', h=x_next.shape[0]), class_labels).to(torch.float64)
+            d_prime = (x_next - denoised) / t_next
+            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+
+        whole_trajectory[i] = x_next
+
+    return x_next, whole_trajectory
+
+class EDM_Sampler:
+    def __init__(self, num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
+                 S_churn=0, S_min=0, S_max=float('inf'), S_noise=0, pfgmpp=False):
+        self.num_steps = num_steps
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.rho = rho
+        self.S_churn = S_churn
+        self.S_min = S_min
+        self.S_max = S_max
+        self.S_noise = S_noise
+        self.pfgmpp = pfgmpp
+
+    def __call__(self, net, latents, class_labels=None, randn_like=torch.randn_like):
+        return edm_sampler(
+            net, latents, class_labels, randn_like,
+            num_steps=self.num_steps, sigma_min=self.sigma_min, 
+            sigma_max=self.sigma_max, rho=self.rho, S_churn=self.S_churn,
+            S_min=self.S_min, S_max=self.S_max, S_noise=self.S_noise, pfgmpp=self.pfgmpp
+        )
+
+class StackedRandomGenerator:
+    def __init__(self, device, seeds):
+        super().__init__()
+        self.generators = [torch.Generator(device).manual_seed(int(seed) % (1 << 32)) for seed in seeds]
+        self.seeds = seeds
+        self.device = device
+
+    def randn(self, size, **kwargs):
+        assert size[0] == len(self.generators)
+        return torch.stack([torch.randn(size[1:], generator=gen, **kwargs) for gen in self.generators])
+
+    def rand_beta_prime(self, size, N=3072, D=128, **kwargs):
+        # sample from beta_prime (N/2, D/2)
+        # print(f"N:{N}, D:{D}")
+        assert size[0] == len(self.seeds)
+        latent_list = []
+        beta_gen = Beta(torch.FloatTensor([N / 2.]), torch.FloatTensor([D / 2.]))
+        for seed in self.seeds:
+            torch.manual_seed(seed)
+            sample_norm = beta_gen.sample().to(kwargs['device']).double()
+            # inverse beta distribution
+            inverse_beta = sample_norm / (1-sample_norm)
+
+            if N < 256 * 256 * 3:
+                sigma_max = 80
+            else:
+                sigma_max = kwargs['sigma_max']
+
+            sample_norm = torch.sqrt(inverse_beta) * sigma_max * np.sqrt(D)
+            gaussian = torch.randn(N).to(sample_norm.device)
+            unit_gaussian = gaussian / torch.norm(gaussian, p=2)
+            init_sample = unit_gaussian * sample_norm
+            latent_list.append(init_sample.reshape((1, *size[1:])))
+
+        latent = torch.cat(latent_list, dim=0)
+        return latent
+
+    def randn_like(self, input):
+        return self.randn(input.shape, dtype=input.dtype, layout=input.layout, device=input.device)
+
+    def randint(self, *args, size, **kwargs):
+        assert size[0] == len(self.generators)
+        return torch.stack([torch.randint(*args, size=size[1:], generator=gen, **kwargs) for gen in self.generators])
