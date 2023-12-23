@@ -10,7 +10,7 @@ import sys
 from einops import rearrange, repeat
 from torchvision.utils import make_grid
 
-from pfgmpp import StackedRandomGenerator, edm_sampler
+from .pfgmpp import StackedRandomGenerator, edm_sampler
 
 sys.path.append("/home/csjacobs/git/diffusionPDE")
 
@@ -260,7 +260,7 @@ class DiffusionPFGMPP(pl.LightningModule):
                                           #sigma_max=80)
         else:
             latents = rnd.randn([batch_size, self.unet.in_channels, self.unet.dim, self.unet.dim], device=self.device)
-        return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like, pfgmpp=self.unet.pfgmpp, **self.sampler_config)
+        return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like)
 
     @torch.no_grad()
     def log_images(self, batch, N=8, n_row=2, sample=True):
@@ -270,6 +270,7 @@ class DiffusionPFGMPP(pl.LightningModule):
         x0, c = self.get_input(batch)
         N = min(x0.shape[0], N)
         x0 = x0.to(self.device)[:N]
+        c = c.to(self.device)[:N]
         log["inputs"] = x0
 
         # backward sampling (denoising)

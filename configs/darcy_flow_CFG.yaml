@@ -1,11 +1,11 @@
 model:
-  target: models.score_matching.DiffusionPFGMPP
+  target: models.score_matching.DiffusionSDE
   params:
     lr: 1e-4
     unet_config:
-      target: models.unets.PFGMPPUNet
+      target: models.unets.CFGUNet
       params:
-        dim: 64
+        data_size: 64
         in_channels: 2
         out_channels: 2
         cond_size: 16
@@ -20,35 +20,16 @@ model:
         cond_drop_prob: 0.0
         adaptive_scale: True
         skip_scale: 1
-        groups: 8
-        pfgmpp: True
-        D: 2048
-        use_fp16: False
-        sigma_min: 0
-        sigma_max: 1e10
-        sigma_data: 0.5
-        model_type: 'CFGUNet'
-    loss_fn_config:
-      target: models.pfgmpp.EDMLoss
+    sde_config:
+      target: sdes.forward.VP
       params:
-        P_mean: -1.2
-        P_std: 1.2
-        sigma_data: 0.5
-        gamma: 5
-        D: 2048
-        N: 8192
+        beta_min: 1e-4
+        beta_max: 10
     sampler_config:
-      target: models.pfgmpp.EDM_Sampler
+      target: sdes.backward.ProbabilityFlowODE
       params:
-        num_steps: 18
-        sigma_min: 0.002
-        sigma_max: 80
-        rho: 7
-        S_churn: 0
-        S_min: 0
-        S_max: 1e10
-        S_noise: 0
-        pfgmpp: True
+        num_time_steps: 2000
+        eps: 1e-5
     residual_config:
       target: physics.operators.DarcyFlow
       params:

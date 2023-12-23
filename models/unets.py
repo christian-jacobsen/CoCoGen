@@ -98,7 +98,7 @@ def Downsample(in_channels, out_channels, kernel_size=4, stride=2, padding=1):
 class CFGUNet(nn.Module):
     #https://github.com/Newbeeer/pfgmpp/blob/d57c1ee4488d8e4064a5b9c8548792f00395aa8b/training/networks.py#L250
     def __init__(self,
-        dim,                                # Dimensionality of the data. 
+        data_size,                                # Dimensionality of the data. 
         in_channels         = 3,            # Number of color channels at input.
         out_channels        = 3,            # Number of color channels at output.
         kernel_size         = 3,            # Kernel size for convolution block.
@@ -123,6 +123,9 @@ class CFGUNet(nn.Module):
         self.cond_drop_prob = cond_drop_prob
         emb_channels = model_channels * channel_mult_emb
         time_dim = model_channels * dim_mult_time
+        self.data_size = data_size
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
         self.null_emb = nn.Parameter(torch.randn(time_dim))
         self.map_time = EmbedFC(1, time_dim)
@@ -138,7 +141,7 @@ class CFGUNet(nn.Module):
         cout = in_channels
         #caux = in_channels
         for level, mult in enumerate(channel_mult):
-            res = dim >> level
+            res = self.data_size >> level
             if level == 0:
                 cin = cout
                 cout = model_channels
@@ -155,7 +158,7 @@ class CFGUNet(nn.Module):
         # Decoder.
         self.dec = torch.nn.ModuleDict()
         for level, mult in reversed(list(enumerate(channel_mult))):
-            res = dim >> level
+            res = self.data_size >> level
             if level == len(channel_mult) - 1:
                 #self.dec[f'{res}_in0'] = ResConv2DBlock(in_channels=cout, out_channels=cout, attention=True, **block_kwargs)
                 self.dec[f'{res}_in0'] = ResConv2DBlock(in_channels=cout, out_channels=cout, **block_kwargs)
@@ -178,7 +181,7 @@ class CFGUNet(nn.Module):
         else:
             return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
 
-    def forward(self, x, cond, time, cond_drop_prob = None):
+    def forward(self, x, cond, time, context_mask, cond_drop_prob = None):
         # Mapping.
         batch_size = x.shape[0]
         # Mapping
@@ -251,7 +254,8 @@ class PFGMPPUNet(torch.nn.Module):
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.in_inchannels = in_channels
+        self.dim = dim
+        self.in_channels = in_channels
         self.out_channels = out_channels
         self.D = D
         self.N = in_channels*dim*dim
@@ -262,7 +266,7 @@ class PFGMPPUNet(torch.nn.Module):
         self.sigma_max = sigma_max
         self.sigma_data = sigma_data
         ###########
-        self.model = globals()[model_type](dim, in_channels=self.in_inchannels, out_channels=self.out_channels, kernel_size=kernel_size, padding=padding, cond_size=cond_size,
+        self.model = globals()[model_type](dim, in_channels=self.in_channels, out_channels=self.out_channels, kernel_size=kernel_size, padding=padding, cond_size=cond_size,
                                            model_channels=model_channels, channel_mult=channel_mult, channel_mult_emb=channel_mult_emb, num_blocks=num_blocks,
                                            dropout=dropout, cond_drop_prob=cond_drop_prob, dim_mult_time=dim_mult_time, adaptive_scale=adaptive_scale, skip_scale=skip_scale, groups=groups,
                                            **model_kwargs)
@@ -271,7 +275,7 @@ class PFGMPPUNet(torch.nn.Module):
 
         x = x.to(torch.float32)
 
-        sigma = sigma.to(torch.float32).reshape(-1, 1)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim],
                                                                     device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
@@ -282,9 +286,10 @@ class PFGMPPUNet(torch.nn.Module):
         c_noise = sigma.log() / 4
 
         x_in = c_in * x
-        F_x = self.model((x_in).to(dtype), class_labels, c_noise.flatten(), **model_kwargs)
+        F_x = self.model((x_in).to(dtype), class_labels, c_noise.flatten(), context_mask=None, **model_kwargs)
 
-        assert F_x.dtype == dtype
+        # disabled due to mixed precision training
+        #assert F_x.dtype == dtype
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
         return D_x
 
