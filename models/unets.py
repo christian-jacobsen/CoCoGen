@@ -132,8 +132,9 @@ class CFGUNet(nn.Module):
         self.map_cond = EmbedFC(cond_size, time_dim) if cond_size else None
         self.map_time_layer = nn.Linear(time_dim, emb_channels)
         self.map_cond_layer = nn.Linear(time_dim, emb_channels) if cond_size else None
+        cond_emb_channels = emb_channels if cond_size else 0
 
-        block_kwargs = dict(kernel_size=kernel_size, padding=padding, time_emb_dim = emb_channels, cond_emb_dim = emb_channels, dropout = dropout, skip_scale=skip_scale,
+        block_kwargs = dict(kernel_size=kernel_size, padding=padding, time_emb_dim = emb_channels, cond_emb_dim = cond_emb_channels, dropout = dropout, skip_scale=skip_scale,
                         adaptive_scale=adaptive_scale, groups=groups, normalization=True)
 
         # Encoder.
@@ -191,7 +192,6 @@ class CFGUNet(nn.Module):
         if self.map_cond is not None:
             cond_emb = self.map_cond(cond)
             cond_emb = nn.functional.silu(self.map_cond_layer(cond_emb.reshape(cond_emb.shape[0], -1)))
-            emb = torch.cat((time_emb, cond_emb), dim=-1)
             if cond_drop_prob == None:
                 cond_drop_prob = self.cond_drop_prob
             if cond_drop_prob > 0:
@@ -203,6 +203,7 @@ class CFGUNet(nn.Module):
                     cond_emb,
                     null_cond_emb
                 )
+            emb = torch.cat((time_emb, cond_emb), dim=-1)
         else:
             emb = time_emb
 
@@ -276,8 +277,7 @@ class PFGMPPUNet(torch.nn.Module):
         x = x.to(torch.float32)
 
         sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
-        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim],
-                                                                    device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        class_labels = None if (self.label_dim == 0 or class_labels is None) else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
 
         c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)

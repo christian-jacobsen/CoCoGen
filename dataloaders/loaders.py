@@ -19,6 +19,8 @@ import pytorch_lightning as pl
 import os
 import os.path as osp
 import argparse
+import math
+import h5py
 
 
 class Darcy_Dataset(Dataset):
@@ -135,3 +137,220 @@ class BurgersLoader(pl.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
 
+class PDEBench2D_Dataset(Dataset):
+    def __init__(self, file_name,
+                 train_type='single', # 'single' or 'autoregressive'
+                 t_train = 21,
+                 initial_step=10,
+                 saved_folder='../data/',
+                 reduced_resolution=1,
+                 reduced_resolution_t=1,
+                 reduced_batch=1,
+                 if_test=False,
+                 test_ratio=0.1,
+                 num_samples_max = -1):
+        """
+        
+        :param filename: filename that contains the dataset
+        :type filename: STR
+        :param filenum: array containing indices of filename included in the dataset
+        :type filenum: ARRAY
+
+        """
+        
+        # Define path to files
+        root_path = os.path.abspath(saved_folder + file_name)
+        assert file_name[-2:] != 'h5', 'HDF5 data is assumed!!'
+        
+        with h5py.File(root_path, 'r') as f:
+            keys = list(f.keys())
+            keys.sort()
+            if 'tensor' not in keys:
+                _data = np.array(f['density'], dtype=np.float32)  # batch, time, x,...
+                idx_cfd = _data.shape
+                if len(idx_cfd)==3:  # 1D
+                    self.data = np.zeros([idx_cfd[0]//reduced_batch,
+                                          idx_cfd[2]//reduced_resolution,
+                                          math.ceil(idx_cfd[1]/reduced_resolution_t),
+                                          3],
+                                         dtype=np.float32)
+                    #density
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data[:, :, :], (0, 2, 1))
+                    self.data[...,0] = _data   # batch, x, t, ch
+                    # pressure
+                    _data = np.array(f['pressure'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data[:, :, :], (0, 2, 1))
+                    self.data[...,1] = _data   # batch, x, t, ch
+                    # Vx
+                    _data = np.array(f['Vx'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data[:, :, :], (0, 2, 1))
+                    self.data[...,2] = _data   # batch, x, t, ch
+
+                if len(idx_cfd)==4:  # 2D
+                    self.data = np.zeros([idx_cfd[0]//reduced_batch,
+                                          idx_cfd[2]//reduced_resolution,
+                                          idx_cfd[3]//reduced_resolution,
+                                          math.ceil(idx_cfd[1]/reduced_resolution_t),
+                                          4],
+                                         dtype=np.float32)
+                    # density
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 1))
+                    self.data[...,0] = _data   # batch, x, t, ch
+                    # pressure
+                    _data = np.array(f['pressure'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 1))
+                    self.data[...,1] = _data   # batch, x, t, ch
+                    # Vx
+                    _data = np.array(f['Vx'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 1))
+                    self.data[...,2] = _data   # batch, x, t, ch
+                    # Vy
+                    _data = np.array(f['Vy'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 1))
+                    self.data[...,3] = _data   # batch, x, t, ch
+                    
+                if len(idx_cfd)==5:  # 3D
+                    self.data = np.zeros([idx_cfd[0]//reduced_batch,
+                                          idx_cfd[2]//reduced_resolution,
+                                          idx_cfd[3]//reduced_resolution,
+                                          idx_cfd[4]//reduced_resolution,
+                                          math.ceil(idx_cfd[1]/reduced_resolution_t),
+                                          5],
+                                         dtype=np.float32)
+                    # density
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 4, 1))
+                    self.data[...,0] = _data   # batch, x, t, ch
+                    # pressure
+                    _data = np.array(f['pressure'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 4, 1))
+                    self.data[...,1] = _data   # batch, x, t, ch
+                    # Vx
+                    _data = np.array(f['Vx'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 4, 1))
+                    self.data[...,2] = _data   # batch, x, t, ch
+                    # Vy
+                    _data = np.array(f['Vy'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 4, 1))
+                    self.data[...,3] = _data   # batch, x, t, ch
+                    # Vz
+                    _data = np.array(f['Vz'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data, (0, 2, 3, 4, 1))
+                    self.data[...,4] = _data   # batch, x, t, ch
+
+            else:  # scalar equations
+                ## data dim = [t, x1, ..., xd, v]
+                _data = np.array(f['tensor'], dtype=np.float32)  # batch, time, x,...
+                if len(_data.shape) == 3:  # 1D
+                    _data = _data[::reduced_batch,::reduced_resolution_t,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data[:, :, :], (0, 2, 1))
+                    self.data = _data[:, :, :, None]  # batch, x, t, ch
+
+                if len(_data.shape) == 4:  # 2D Darcy flow
+                    # u: label
+                    _data = _data[::reduced_batch,:,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data[:, :, :, :], (0, 2, 3, 1))
+                    #if _data.shape[-1]==1:  # if nt==1
+                    #    _data = np.tile(_data, (1, 1, 1, 2))
+                    self.data = _data
+                    # nu: input
+                    _data = np.array(f['nu'], dtype=np.float32)  # batch, time, x,...
+                    _data = _data[::reduced_batch, None,::reduced_resolution,::reduced_resolution]
+                    ## convert to [x1, ..., xd, t, v]
+                    _data = np.transpose(_data[:, :, :, :], (0, 2, 3, 1))
+                    self.data = np.concatenate([_data, self.data], axis=-1)
+                    self.data = self.data[:, :, :, :, None]  # batch, x, y, t, ch
+
+        if num_samples_max>0:
+            num_samples_max  = min(num_samples_max,self.data.shape[0])
+        else:
+            num_samples_max = self.data.shape[0]
+
+        test_idx = int(num_samples_max * test_ratio)
+        if if_test:
+            self.data = self.data[:test_idx]
+        else:
+            self.data = self.data[test_idx:num_samples_max]
+
+        # Time steps used as initial conditions
+        self.initial_step = initial_step
+        self.t_train = t_train
+        self.train_type = train_type
+        
+        self.data = torch.tensor(self.data)
+
+
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        # self.data.shape = (N_sample, Nx, Ny, Nt(21), Nch(4))
+        
+        #return self.data[idx,...,:self.initial_step,:], self.data[idx]
+        if self.train_type == 'single':
+            return torch.permute(self.data[idx,...,0,:], (2, 0, 1)), torch.permute(self.data[idx,...,self.t_train-1,:], (2, 0, 1))
+        else:
+            raise NotImplementedError
+
+class PDEBench2D_Dataloader(pl.LightningDataModule):
+    def __init__(self, 
+                 file_name,
+                 batch_size=32,
+                 num_workers=8,
+                 train_type='single', # 'single' or 'autoregressive'
+                 t_train = 21,
+                 initial_step=10,
+                 saved_folder='../data/',
+                 reduced_resolution=1,
+                 reduced_resolution_t=1,
+                 reduced_batch=1,
+                 if_test=False,
+                 test_ratio=0.1,
+                 num_samples_max = -1):
+        super().__init__()
+        self.saved_folder = saved_folder
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.file_name = file_name
+        self.train_type = train_type
+        self.t_train = t_train
+        self.initial_step = initial_step
+        self.reduced_resolution = reduced_resolution
+        self.reduced_resolution_t = reduced_resolution_t
+        self.reduced_batch = reduced_batch
+        self.if_test = if_test
+        self.test_ratio = test_ratio
+        self.num_samples_max = num_samples_max
+
+    def setup(self, stage: str):
+        self.train_dataset = PDEBench2D_Dataset(self.file_name, self.train_type, self.t_train, self.initial_step, 
+                                                self.saved_folder, self.reduced_resolution, self.reduced_resolution_t,
+                                                self.reduced_batch, self.if_test, self.test_ratio, self.num_samples_max)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
