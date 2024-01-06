@@ -388,15 +388,15 @@ class Diffusion2D_NS(pl.LightningModule):
         log = dict()
 
         # log samples
-        x0, c = self.get_input(batch)
-        N = min(x0.shape[0], N)
-        x0 = x0.to(self.device)[:N]
-        c = c.to(self.device)[:N]
-        log["inputs"] = x0
+        x, y = self.get_input(batch)
+        N = min(x.shape[0], N)
+        x = x.to(self.device)[:N]
+        y = y.to(self.device)[:N]
+        log["inputs"] = y
 
         # backward sampling (denoising)
         start_time = time.time()
-        samples, intermediates = self.sample(batch_size=N, c=c)
+        samples, intermediates = self.sample(batch_size=N, c=None)
         end_time = time.time()
         log["samples"] = samples
         
