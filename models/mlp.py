@@ -243,6 +243,59 @@ class CFGResNet(torch.nn.Module):
         x = self.final_layer(nn.functional.silu(x))
         return x
 
+class EDM_CFG(torch.nn.Module):
+    def __init__(self,
+        in_dim, out_dim, cond_size,
+        model_dim      = 128,      # dim multiplier.
+        dim_mult        = [1,1,1,1],# dim multiplier for each resblock layer.
+        dim_mult_emb    = 4,
+        num_blocks          = 4,        # Number of resblocks(mid) per level.
+        dropout             = 0.,      # Dropout rate.
+        emb_type            = "sinusoidal",# Timestep embedding type
+        dim_mult_time  = 1,        # Time embedding size
+        use_fp16        = False,            # Execute the underlying model at FP16 precision?
+        sigma_min       = 0,                # Minimum supported noise level.
+        sigma_max       = float('inf'),     # Maximum supported noise level.
+        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        model_type      = 'CFGResNet',   # Class name of the underlying model.
+        **model_kwargs,                     # Keyword arguments for the underlying model.
+    ):
+        super().__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.label_dim = cond_size
+        self.use_fp16 = use_fp16
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        ###########
+        self.model = globals()[model_type](self.in_dim, self.out_dim, self.label_dim, model_dim=model_dim, dim_mult=dim_mult, dim_mult_emb=dim_mult_emb, num_blocks=num_blocks,
+                                           dropout=dropout, emb_type=emb_type, dim_mult_time=dim_mult_time, **model_kwargs)
+
+    def forward(self, x, sigma, class_labels=None, force_fp32=False,  **model_kwargs):
+
+        x = x.to(torch.float32)
+
+        sigma = sigma.to(torch.float32).reshape(-1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim],
+                                                                    device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
+
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        x_in = c_in * x
+        F_x = self.model((x_in).to(dtype), class_labels, c_noise.flatten(), **model_kwargs)
+
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+
 class CtrlResNet(torch.nn.Module):
     def __init__(self, in_dim, out_dim, cond_size,
                 model_dim      = 128,      # dim multiplier.
