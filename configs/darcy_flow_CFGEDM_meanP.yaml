@@ -1,0 +1,78 @@
+model:
+  target: models.score_matching.DiffusionPFGMPP
+  params:
+    lr: 1e-4
+    unet_config:
+      target: models.unets.PFGMPPUNet
+      params:
+        dim: 64
+        in_channels: 2
+        out_channels: 2
+        cond_size: 1
+        kernel_size: 3
+        padding: 1
+        model_channels: 256
+        channel_mult: [1, 2]
+        channel_mult_emb: 2
+        num_blocks: 1
+        dropout: 0.0
+        dim_mult_time: 1
+        cond_drop_prob: 0.0
+        adaptive_scale: True
+        skip_scale: 1
+        groups: 8
+        pfgmpp: False
+        D: 2048
+        use_fp16: False
+        sigma_min: 0
+        sigma_max: 1e10
+        sigma_data: 0.5
+        model_type: 'CFGUNet'
+    loss_fn_config:
+      target: models.pfgmpp.EDMLoss
+      params:
+        P_mean: -1.2
+        P_std: 1.2
+        sigma_data: 0.5
+        gamma: 5
+        D: 2048
+        N: 8192
+    sampler_config:
+      target: models.pfgmpp.EDM_Sampler
+      params:
+        num_steps: 18
+        sigma_min: 0.002
+        sigma_max: 80
+        rho: 7
+        S_churn: 0
+        S_min: 0
+        S_max: 1e10
+        S_noise: 0
+        pfgmpp: False
+    residual_config:
+      target: physics.operators.DarcyFlow
+      params:
+        dx: 0.015625
+        eps: 1e-8
+        mu_p: 0.0
+        sigma_p: 0.08232874
+        mu_k: 1.14906847
+        sigma_k: 7.81547992
+
+data:
+  target: dataloaders.loaders.ModDarcyLoader
+  params:
+    data_dir: /home/csjacobs/git/diffusionPDE/datasets/Darcy_n16
+    batch_size: 128
+    num_workers: 8
+
+lightning:
+  lock_base: False
+  trainer:
+    accelerator: gpu
+    strategy: ddp_find_unused_parameters_true
+    devices: 0,1
+    precision: 16-mixed
+  epochs: 4555
+  save_every_n_epochs: 5
+  sample_every_n_steps: 2000

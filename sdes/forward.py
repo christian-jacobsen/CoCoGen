@@ -48,6 +48,26 @@ class VP(nn.Module):
     def sample_prior(self, data_size, device):
         return torch.randn(data_size, device=device)
 
+class karras_scaled_vp:
+    def __init__(self, beta_d=19.9, beta_min=0.1, epsilon_t=1e-5):
+        self.beta_d = beta_d
+        self.beta_min = beta_min
+        self.epsilon_t = epsilon_t
+
+    def __call__(self, net, images, labels, **kwargs):
+        rnd_uniform = torch.rand([images.shape[0], 1, 1, 1], device=images.device)
+        sigma = self.sigma(1 + rnd_uniform * (self.epsilon_t - 1))
+        weight = 1 / sigma ** 2
+        y=images
+        n = torch.randn_like(y) * sigma
+        D_yn = net(y + n, sigma, labels)
+        loss = weight * ((D_yn - y) ** 2)
+        return loss
+
+    def sigma(self, t):
+        t = torch.as_tensor(t)
+        return ((0.5 * self.beta_d * (t ** 2) + self.beta_min * t).exp() - 1).sqrt()
+
 class uncon_VP_1D(nn.Module):
     def __init__(self, 
                  beta_min=1e-4, 

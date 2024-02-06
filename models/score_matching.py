@@ -236,6 +236,7 @@ class DiffusionPFGMPP(pl.LightningModule):
 
     def training_step(self, batch):
         x, c = self.get_input(batch)
+        #print('x shape: ', x.shape, 'c shape: ', c.shape)
         loss, loss_dict = self.forward(x, c)
 
         self.log_dict(loss_dict, prog_bar=True,
@@ -287,6 +288,9 @@ class DiffusionPFGMPP(pl.LightningModule):
                  prog_bar=True, logger=True, on_step=False, on_epoch=True)
         self.log("sample time", end_time-start_time, logger=True, prog_bar=True,
                  on_step=False, on_epoch=True)
+        p_mean = torch.mean(samples[:, 0, :, :], dim=(1,2)) 
+        self.log("Permeability deviation", torch.nn.functional.mse_loss(p_mean, c),
+                 prog_bar=True, logger=True, on_step=False, on_epoch=True)
 
         return log
 
