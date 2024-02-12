@@ -11,6 +11,7 @@ from einops import rearrange, repeat
 from torchvision.utils import make_grid
 
 from .pfgmpp import StackedRandomGenerator, edm_sampler
+from .lr_scheduler import LinearWarmupCosineAnnealingLR
 
 sys.path.append("/home/csjacobs/git/diffusionPDE")
 
@@ -231,20 +232,20 @@ class DiffusionPFGMPP(pl.LightningModule):
         log_prefix = 'train' if self.training else 'val'
         # score-mathcing objective function
         score_loss = self.loss_fn(self.unet, x, labels=c, augment_pipe=None, stf=False, pfgmpp=self.unet.pfgmpp)
-        loss_dict.update({f'{log_prefix}/loss_score': score_loss.mean()})
-        return score_loss.mean(), loss_dict
+        return score_loss.mean()
 
     def training_step(self, batch):
         x, c = self.get_input(batch)
-        #print('x shape: ', x.shape, 'c shape: ', c.shape)
-        loss, loss_dict = self.forward(x, c)
+        loss = self.forward(x, c)
+        self.log('train/loss_score', loss, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        
+        return loss
 
-        self.log_dict(loss_dict, prog_bar=True,
-                      logger=True, on_step=True, on_epoch=True)
-
-        self.log("global_step", self.global_step,
-                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
-
+    def validation_step(self, batch, batch_idx):
+        x, c = self.get_input(batch)
+        loss = self.forward(x, c)
+        self.log('val/loss_score', loss, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        
         return loss
 
     def get_input(self, batch):
@@ -264,7 +265,7 @@ class DiffusionPFGMPP(pl.LightningModule):
         return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like)
 
     @torch.no_grad()
-    def log_images(self, batch, N=8, n_row=2, sample=True):
+    def log_images(self, batch, N=12, n_row=2, sample=True):
         log = dict()
 
         # log samples
@@ -289,8 +290,9 @@ class DiffusionPFGMPP(pl.LightningModule):
         self.log("sample time", end_time-start_time, logger=True, prog_bar=True,
                  on_step=False, on_epoch=True)
         p_mean = torch.mean(samples[:, 0, :, :], dim=(1,2)) 
-        self.log("Permeability deviation", torch.nn.functional.mse_loss(p_mean, c),
-                 prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        # For mean permeability
+        #self.log("Permeability deviation", torch.nn.functional.mse_loss(p_mean, c),
+        #         prog_bar=True, logger=True, on_step=False, on_epoch=True)
 
         return log
 
@@ -302,10 +304,28 @@ class DiffusionPFGMPP(pl.LightningModule):
         return grid
 
     def configure_optimizers(self):
-        lr = self.lr
-        params = list(self.unet.parameters())
-        return torch.optim.AdamW(params, lr=lr)
+        # Create the AdamW optimizer
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-5)
 
+        # Create the LinearWarmupCosineAnnealingLR scheduler
+        scheduler = LinearWarmupCosineAnnealingLR(optimizer, 
+                                                  warmup_epochs=100,
+                                                  max_epochs=1000,
+                                                  warmup_start_lr=1e-7,
+                                                  eta_min=1e-7)
+
+        # Return the optimizer and the scheduler
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+
+
+'''
 class Diffusion2D_NS(pl.LightningModule):
     # base class for training a score-matching objective
     def __init__(self,
@@ -428,8 +448,4 @@ class Diffusion2D_NS(pl.LightningModule):
         grid = rearrange(grid, 'b n c h w -> (b n) c h w')
         grid = make_grid(grid, nrow=n_per_row)
         return grid
-
-    def configure_optimizers(self):
-        lr = self.lr
-        params = list(self.unet.parameters())
-        return torch.optim.AdamW(params, lr=lr)
+'''

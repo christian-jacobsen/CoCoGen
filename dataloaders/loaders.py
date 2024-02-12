@@ -24,11 +24,24 @@ import h5py
 
 
 class Darcy_Dataset(Dataset):
-    def __init__(self, path):
+    def __init__(self, path, subset='train', split_ratios=(0.7, 0.2, 0.1), seed=0):
         self.root = path
+        np.random.seed(seed)
 
-        # load the sample names
+        # load the sample names and partition
         sample_names = os.listdir(osp.join(path, "data"))
+        np.random.shuffle(sample_names)  # Shuffle the dataset
+        num_samples = len(sample_names)
+        num_train = int(split_ratios[0] * num_samples)
+        num_val = int(split_ratios[1] * num_samples)
+        
+        if subset == 'train':
+            sample_names = sample_names[:num_train]
+        elif subset == 'val':
+            sample_names = sample_names[num_train:num_train + num_val]
+        elif subset == 'test':
+            sample_names = sample_names[num_train + num_val:]
+        
         self.P_names, self.U1_names, self.U2_names = self.seperate_img_names(sample_names)
         self.P_names.sort()
         self.U1_names.sort()
@@ -90,25 +103,49 @@ class Darcy_Dataset(Dataset):
         return Data, W
 
 class DarcyLoader(pl.LightningDataModule):
-    def __init__(self, data_dir, batch_size=32, num_workers=8):
+    def __init__(self, data_dir, batch_size=32, num_workers=8, split_ratios=(0.7, 0.2, 0.1)):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.split_ratios = split_ratios
 
-    def setup(self, stage: str):
-        self.train_dataset = Darcy_Dataset(self.data_dir)
+    def setup(self, stage: str = None):
+        if stage == 'fit' or stage is None:
+            self.train_dataset = Darcy_Dataset(self.data_dir, subset='train', split_ratios=self.split_ratios)
+            self.val_dataset = Darcy_Dataset(self.data_dir, subset='val', split_ratios=self.split_ratios)
+        if stage == 'test' or stage is None:
+            self.test_dataset = Darcy_Dataset(self.data_dir, subset='test', split_ratios=self.split_ratios)
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def test_dataloader(self):
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
 
 
 class Mod_Darcy_Dataset(Dataset):
-    def __init__(self, path):
+    def __init__(self, path, subset='train', split_ratios=(0.7, 0.2, 0.1), seed=0):
         self.root = path
+        np.random.seed(seed)
 
-        # load the sample names
+        # load the sample names and partition
         sample_names = os.listdir(osp.join(path, "data"))
+        np.random.shuffle(sample_names)  # Shuffle the dataset
+        num_samples = len(sample_names)
+        num_train = int(split_ratios[0] * num_samples)
+        num_val = int(split_ratios[1] * num_samples)
+        
+        if subset == 'train':
+            sample_names = sample_names[:num_train]
+        elif subset == 'val':
+            sample_names = sample_names[num_train:num_train + num_val]
+        elif subset == 'test':
+            sample_names = sample_names[num_train + num_val:]
+        
         self.P_names, self.U1_names, self.U2_names = self.seperate_img_names(sample_names)
         self.P_names.sort()
         self.U1_names.sort()
@@ -160,17 +197,28 @@ class Mod_Darcy_Dataset(Dataset):
         return Data, W
 
 class ModDarcyLoader(pl.LightningDataModule):
-    def __init__(self, data_dir, batch_size=32, num_workers=8):
+    def __init__(self, data_dir, batch_size=32, num_workers=8, split_ratios=(0.7, 0.2, 0.1)):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.split_ratios = split_ratios
 
-    def setup(self, stage: str):
-        self.train_dataset = Mod_Darcy_Dataset(self.data_dir)
+    def setup(self, stage: str = None):
+        if stage == 'fit' or stage is None:
+            self.train_dataset = Darcy_Dataset(self.data_dir, subset='train', split_ratios=self.split_ratios)
+            self.val_dataset = Darcy_Dataset(self.data_dir, subset='val', split_ratios=self.split_ratios)
+        if stage == 'test' or stage is None:
+            self.test_dataset = Darcy_Dataset(self.data_dir, subset='test', split_ratios=self.split_ratios)
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def test_dataloader(self):
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers)
 
 class Burgers_Dataset(Dataset):
     def __init__(self, path):

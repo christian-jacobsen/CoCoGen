@@ -85,8 +85,8 @@ class ResConv2DBlock(nn.Module):
 
         if self.num_heads:
             self.norm2 = GroupNorm(num_channels=out_channels, num_groups=groups)
-            self.qkv = nn.Conv2d(in_channels=out_channels, out_channels=out_channels*3, kernel=1)
-            self.proj = zero_module(nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=1))
+            self.qkv = nn.Conv2d(in_channels=out_channels, out_channels=out_channels*3, kernel_size=1)
+            self.proj = zero_module(nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=1))
 
     def forward(self, x, cond_emb):
         orig = x
@@ -149,7 +149,9 @@ class CFGUNet(nn.Module):
         dim_mult_time       = 1,            # Time embedding multiplier for the noise level.
         adaptive_scale      = True,         # Scale shift
         skip_scale          = 1,            # Scale of the residual connection.
-        groups              = 8            # Number of groups for group normalization.
+        groups              = 8,            # Number of groups for group normalization.
+        attention          = False,        
+        num_heads          = None,
         ):
         super().__init__()
 
@@ -168,7 +170,7 @@ class CFGUNet(nn.Module):
         cond_emb_channels = emb_channels if cond_size else 0
 
         block_kwargs = dict(kernel_size=kernel_size, padding=padding, time_emb_dim = emb_channels, cond_emb_dim = cond_emb_channels, dropout = dropout, skip_scale=skip_scale,
-                        adaptive_scale=adaptive_scale, groups=groups, normalization=True)
+                        adaptive_scale=adaptive_scale, groups=groups, attention=attention, num_heads=num_heads, normalization=True)
 
         # Encoder.
         self.enc = torch.nn.ModuleDict()

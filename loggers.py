@@ -78,19 +78,19 @@ class SetupCallback(Callback):
 
 
 class ImageLogger(Callback):
-    def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True,
+    def __init__(self, max_images, clamp=True, increase_log_steps=True,
                  rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
                  log_images_kwargs=None):
         super().__init__()
         self.rescale = rescale
-        self.batch_freq = batch_frequency
+        #self.batch_freq = batch_frequency
         self.max_images = max_images
         self.logger_log_images = {
             pl.loggers.TensorBoardLogger: self._testtube,
         }
-        self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
-        if not increase_log_steps:
-            self.log_steps = [self.batch_freq]
+        #self.log_steps = [2 ** n for n in range(int(np.log2(self.batch_freq)) + 1)]
+        #if not increase_log_steps:
+        #    self.log_steps = [self.batch_freq]
         self.clamp = clamp
         self.disabled = disabled
         self.log_on_batch_idx = log_on_batch_idx
@@ -98,7 +98,7 @@ class ImageLogger(Callback):
         self.log_first_step = log_first_step
 
     @rank_zero_only
-    def _testtube(self, pl_module, images, batch_idx, split):
+    def _testtube(self, pl_module, images, split):
         for k in images:
             grid = torchvision.utils.make_grid(images[k], nrow=images[k].shape[0]//self.channels)
             #grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
@@ -110,7 +110,7 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def log_local(self, save_dir, split, images,
-                  global_step, current_epoch, batch_idx):
+                  global_step, current_epoch):
         root = os.path.join(save_dir, "images", split)
         for k in images:
             grid = torchvision.utils.make_grid(images[k], nrow=images[k].shape[0]//self.channels)
@@ -121,61 +121,57 @@ class ImageLogger(Callback):
             grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
             grid = grid.numpy()
             grid = (grid * 255).astype(np.uint8)
-            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
+            filename = "{}_gs-{:06}_e-{:06}.png".format(
                 k,
                 global_step,
-                current_epoch,
-                batch_idx)
+                current_epoch
+                )
             path = os.path.join(root, filename)
             os.makedirs(os.path.split(path)[0], exist_ok=True)
             Image.fromarray(grid).save(path)
 
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
-        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
-        if (self.check_frequency(check_idx) and  # batch_idx % self.batch_freq == 0
-                hasattr(pl_module, "log_images") and
-                callable(pl_module.log_images) and
-                self.max_images > 0):
-            logger = type(pl_module.logger)
+    def log_img(self, pl_module, batch, split="train"):
+        logger = type(pl_module.logger)
 
-            is_train = pl_module.training
-            if is_train:
-                pl_module.eval()
+        is_train = pl_module.training
+        if is_train:
+            pl_module.eval()
 
-            with torch.no_grad():
-                images = pl_module.log_images(batch, **self.log_images_kwargs)
+        with torch.no_grad():
+            images = pl_module.log_images(batch, **self.log_images_kwargs)
 
-            all_images = {}
+        all_images = {}
 
-            for k in images:
-                self.channels = images[k].shape[1]
-                N = min(images[k].shape[0], self.max_images)
-                images[k] = images[k][:N]
+        for k in images:
+            self.channels = images[k].shape[1]
+            N = min(images[k].shape[0], self.max_images)
+            images[k] = images[k][:N]
 
-                # extract each channel separately
-                all_images[k] = []
-                for channel in range(images[k].shape[1]):
-                    all_images[k].append(images[k][:, channel].unsqueeze(1))
-                all_images[k] = torch.cat(all_images[k], dim=0)
-                
-                if isinstance(all_images[k], torch.Tensor):
-                    all_images[k] = all_images[k].detach().cpu()
-                    if self.clamp:
-                        all_images[k] = torch.clamp(all_images[k], -1., 1.)
+            # extract each channel separately
+            all_images[k] = []
+            for channel in range(images[k].shape[1]):
+                all_images[k].append(images[k][:, channel].unsqueeze(1))
+            all_images[k] = torch.cat(all_images[k], dim=0)
+            
+            if isinstance(all_images[k], torch.Tensor):
+                all_images[k] = all_images[k].detach().cpu()
+                if self.clamp:
+                    all_images[k] = torch.clamp(all_images[k], -1., 1.)
 
-            # convert to rgb if grayscale (already on cpu)
-            if all_images["inputs"].shape[1] == 1:
-                all_images = convert_to_rgb(all_images)
+        # convert to rgb if grayscale (already on cpu)
+        if all_images["inputs"].shape[1] == 1:
+            all_images = convert_to_rgb(all_images)
 
-            self.log_local(pl_module.logger.save_dir, split, all_images,
-                           pl_module.global_step, pl_module.current_epoch, batch_idx)
+        self.log_local(pl_module.logger.save_dir, split, all_images,
+                        pl_module.global_step, pl_module.current_epoch)
 
-            logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-            logger_log_images(pl_module, all_images, pl_module.global_step, split)
+        logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
+        logger_log_images(pl_module, all_images, split)
 
-            if is_train:
-                pl_module.train()
+        if is_train:
+            pl_module.train()
 
+    '''
     def check_frequency(self, check_idx):
         if ((check_idx % self.batch_freq) == 0 or (check_idx in self.log_steps)) and (
                 check_idx > 0 or self.log_first_step):
@@ -186,17 +182,24 @@ class ImageLogger(Callback):
                 pass
             return True
         return False
+    '''
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            self.log_img(pl_module, batch, batch_idx, split="train")
+    def on_train_start(self, trainer, pl_module):
+        self.sampled_train_batches = self.sample_batches(trainer.train_dataloader)
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
-        if not self.disabled and pl_module.global_step > 0:
-            self.log_img(pl_module, batch, batch_idx, split="val")
-        if hasattr(pl_module, 'calibrate_grad_norm'):
-            if (pl_module.calibrate_grad_norm and batch_idx % 25 == 0) and batch_idx > 0:
-                self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
+    def on_validation_start(self, trainer, pl_module):
+        self.sampled_val_batches = self.sample_batches(trainer.val_dataloaders)
+
+    def sample_batches(self, dataloader):
+        iterator = iter(dataloader)
+        batch = next(iterator)
+        return batch
+
+    def on_train_epoch_end(self, trainer, pl_module): 
+        self.log_img(pl_module, self.sampled_train_batches, split="train")
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        self.log_img(pl_module, self.sampled_val_batches, split="val")
 
 
 class CUDACallback(Callback):

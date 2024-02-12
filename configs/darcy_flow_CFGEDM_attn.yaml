@@ -8,7 +8,7 @@ model:
         dim: 64
         in_channels: 2
         out_channels: 2
-        cond_size: 1
+        cond_size: 16
         kernel_size: 3
         padding: 1
         model_channels: 256
@@ -62,7 +62,7 @@ model:
         sigma_k: 7.81547992
 
 data:
-  target: dataloaders.loaders.ModDarcyLoader
+  target: dataloaders.loaders.DarcyLoader
   params:
     data_dir: /home/csjacobs/git/diffusionPDE/datasets/Darcy_n16
     batch_size: 64
@@ -73,8 +73,7 @@ lightning:
   trainer:
     accelerator: gpu
     strategy: ddp_find_unused_parameters_true
-    devices: 1
+    devices: 0,1
     precision: 16-mixed
-  epochs: 4555
-  save_every_n_epochs: 5
-  sample_every_n_steps: 2000
+  epochs: 1000
+  save_every_n_epochs: 100

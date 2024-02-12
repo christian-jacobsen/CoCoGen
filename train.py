@@ -95,8 +95,7 @@ def main():
         "image_logger": {
             "target": "loggers.ImageLogger",
             "params": {
-                "batch_frequency": lightning_config.sample_every_n_steps,
-                "max_images": 8,
+                "max_images": 12,
                 "clamp": False
             }
         },
@@ -106,7 +105,15 @@ def main():
     }
 
     checkpoint_callback_0 = ModelCheckpoint(dirpath=osp.join(ckptdir), every_n_epochs=lightning_config.save_every_n_epochs, save_on_train_epoch_end=True, filename="last")
-    checkpoint_callback_1 = ModelCheckpoint(dirpath=osp.join(ckptdir), save_top_k=5, monitor="train/loss_epoch")
+    #checkpoint_callback_1 = ModelCheckpoint(dirpath=osp.join(ckptdir), save_top_k=5, monitor="train/loss_epoch")
+    checkpoint_callback_1 = ModelCheckpoint(
+                                        dirpath=osp.join(ckptdir),
+                                        save_top_k=1,  # Keeps only the best checkpoint
+                                        monitor="val/loss_score", 
+                                        mode="min",  
+                                        filename="best_val", 
+                                        verbose=True
+                                    )
 
     trainer_kwargs = dict()
     trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
