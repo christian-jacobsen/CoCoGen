@@ -65,7 +65,7 @@ data:
   target: dataloaders.loaders.DarcyLoader
   params:
     data_dir: /home/csjacobs/git/diffusionPDE/datasets/Darcy_n16
-    batch_size: 64
+    batch_size: 32
     num_workers: 8
 
 lightning:

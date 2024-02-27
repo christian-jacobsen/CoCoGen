@@ -1,14 +1,14 @@
 model:
-  target: models.score_matching.DiffusionPFGMPP
+  target: models.score_matching.DiffusionPFGMPP_inpaint
   params:
     lr: 1e-4
     unet_config:
       target: models.unets.PFGMPPUNet
       params:
         dim: 64
-        in_channels: 2
+        in_channels: 3
         out_channels: 2
-        cond_size: 16
+        cond_size: 1
         kernel_size: 3
         padding: 1
         model_channels: 256
@@ -51,6 +51,7 @@ model:
         S_max: 1e10
         S_noise: 0
         pfgmpp: False
+        mask_channel: True
     residual_config:
       target: physics.operators.DarcyFlow
       params:
@@ -62,7 +63,7 @@ model:
         sigma_k: 7.81547992
 
 data:
-  target: dataloaders.loaders.DarcyLoader
+  target: dataloaders.loaders.ModDarcyLoader
   params:
     data_dir: /home/csjacobs/git/diffusionPDE/datasets/Darcy_n16
     batch_size: 32

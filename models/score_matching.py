@@ -15,7 +15,7 @@ from .lr_scheduler import LinearWarmupCosineAnnealingLR
 
 sys.path.append("/home/csjacobs/git/diffusionPDE")
 
-from utils import instantiate_from_config
+from utils import instantiate_from_config, create_scatter_mask, create_patch_mask
 
 class DiffusionSDE(pl.LightningModule):
     # base class for training a score-matching objective
@@ -101,27 +101,22 @@ class DiffusionSDE(pl.LightningModule):
         x, c = self.get_input(batch)
         loss, loss_dict = self.forward(x, c)
         self.log_dict(loss_dict, prog_bar=True,
-                      logger=True, on_step=True, on_epoch=True)
+                      logger=True, on_step=True, on_epoch=True, sync_dist=True)
 
         self.log("global_step", self.global_step,
                  prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         return loss
 
-    def get_input(self, batch):
-        x, c = batch
-        return x, c
 
     @torch.no_grad()
     def sample(self, batch_size=8, c=None):
         return self.sampler.forward(self.unet, self.sde, 
                                     (batch_size, self.unet.in_channels, self.unet.data_size, self.unet.data_size), 
-                                    c=c,
-                                    device=self.device)
-
+                                    c=c, device=self.device)
 
     @torch.no_grad()
-    def log_images(self, batch, N=8, n_row=2, sample=True):
+    def log_images(self, batch, N=8, n_row=2):
         log = dict()
 
         # log samples
@@ -155,7 +150,6 @@ class DiffusionSDE(pl.LightningModule):
                  prog_bar=True, logger=True, on_step=False, on_epoch=True)
         self.log("sample time", end_time-start_time, logger=True, prog_bar=True,
                  on_step=False, on_epoch=True)
-
         return log
 
     def sample_inpaint(self, values, indices):
@@ -253,19 +247,20 @@ class DiffusionPFGMPP(pl.LightningModule):
         return x, c
 
     @torch.no_grad()
-    def sample(self, batch_size=8, c=None):
+    def sample(self, batch_size=8, c=None, **kwargs):
         rnd = StackedRandomGenerator(self.device, range(batch_size))
         if self.unet.pfgmpp:
             latents = rnd.rand_beta_prime([batch_size, self.unet.in_channels, self.unet.dim, self.unet.dim],
                                           N = self.unet.N, D = self.unet.D, pfgmpp=self.unet.pfgmpp, device=self.device,
-                                          sigma_max=self.sampler_config['sigma_max'] if (self.unet.N > 256 * 256 * 3) else 80)
+                                          sigma_max=self.sampler_config['sigma_max'] if (self.unet.N > 256 * 256 * 3) else 80,
+                                          **kwargs)
                                           #sigma_max=80)
         else:
             latents = rnd.randn([batch_size, self.unet.in_channels, self.unet.dim, self.unet.dim], device=self.device)
-        return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like)
+        return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like, **kwargs)
 
     @torch.no_grad()
-    def log_images(self, batch, N=12, n_row=2, sample=True):
+    def log_images(self, batch, N=12, n_row=2, inpaint=False):
         log = dict()
 
         # log samples
@@ -294,6 +289,28 @@ class DiffusionPFGMPP(pl.LightningModule):
         #self.log("Permeability deviation", torch.nn.functional.mse_loss(p_mean, c),
         #         prog_bar=True, logger=True, on_step=False, on_epoch=True)
 
+        if inpaint:
+            # inpainting
+            scatter_mask = create_scatter_mask(x0, channels=[0], ratio=0.2)
+            patch_mask = create_patch_mask(x0, channels=[0], ratio=0.9)
+            log['scatter known'] = x0*scatter_mask
+            log['patch known'] = x0*patch_mask
+            scatter_samples, _ = self.sample(batch_size=N, c=c, mask=scatter_mask, known_latents=x0)
+            patch_samples, _ = self.sample(batch_size=N, c=c, mask=patch_mask, known_latents=x0)
+            log['scatter inpaint'] = scatter_samples
+            log['patch inpaint'] = patch_samples
+            
+            p_scatter = scatter_samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+            k_scatter = scatter_samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+            residual_scatter, _, _, _, _, _, _ = self.residual.r_diff(p_scatter, k_scatter)
+            p_patch = patch_samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+            k_patch = patch_samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+            residual_patch, _, _, _, _, _, _ = self.residual.r_diff(p_patch, k_patch)
+            self.log("physics_residual_l2_norm_scatter_inpaint", torch.mean(residual_scatter**2),
+                        prog_bar=True, logger=True, on_step=False, on_epoch=True)
+            self.log("physics_residual_l2_norm_patch_inpaint", torch.mean(residual_patch**2),
+                        prog_bar=True, logger=True, on_step=False, on_epoch=True)
+
         return log
 
     def _get_rows_from_list(self, samples):
@@ -305,8 +322,9 @@ class DiffusionPFGMPP(pl.LightningModule):
 
     def configure_optimizers(self):
         # Create the AdamW optimizer
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-5)
-
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
+        #return optimizer
+        #'''
         # Create the LinearWarmupCosineAnnealingLR scheduler
         scheduler = LinearWarmupCosineAnnealingLR(optimizer, 
                                                   warmup_epochs=100,
@@ -323,7 +341,171 @@ class DiffusionPFGMPP(pl.LightningModule):
                 'frequency': 1
             }
         }
+        #'''
 
+class DiffusionPFGMPP_inpaint(pl.LightningModule):
+    # base class for training a score-matching objective
+    def __init__(self,
+                 unet_config,
+                 loss_fn_config,
+                 sampler_config,
+                 residual_config,
+                 eps=1e-5,
+                 elbo_weight=0.,
+                 log_every_t=50,
+                 lr=1e-4,
+                 ignore_keys=[],
+                 ckpt_path=None):
+        super().__init__()
+
+        self.unet = instantiate_from_config(unet_config)
+        self.loss_fn = instantiate_from_config(loss_fn_config)
+        self.sampler = instantiate_from_config(sampler_config)
+        self.residual = instantiate_from_config(residual_config)
+        self.eps = eps
+        self.lr = lr
+        self.elbo_weight = elbo_weight
+        self.log_every_t = log_every_t
+
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+
+    def init_from_ckpt(self, path, ignore_keys=list()):
+        params = torch.load(path, map_location='cpu')
+        if "state_dict" in list(params.keys()):
+            params = params["state_dict"]
+        keys = list(params.keys())
+        for k in keys:
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    print("Deleting key {} from state_dict.".format(k))
+                    del params[k]
+
+        missing, unexpected = self.load_state_dict(params, strict=False)
+        print(f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys")
+        if len(missing) > 0:
+            print(f"Missing keys: {missing}")
+        if len(unexpected) > 0:
+            print(f"Unexpected keys: {unexpected}")
+
+    def forward(self, x, c, mask=None):
+        loss_dict = {}
+        log_prefix = 'train' if self.training else 'val'
+        # score-mathcing objective function
+        score_loss = self.loss_fn(self.unet, x, labels=c, augment_pipe=None, stf=False, mask=mask, pfgmpp=self.unet.pfgmpp)
+        return score_loss.mean()
+
+    def training_step(self, batch):
+        x, c = self.get_input(batch)
+        mask = create_scatter_mask(x, channels=[0], ratio=torch.rand(1))
+        x = torch.concat((x, mask[:,:1]), dim=1)
+        loss = self.forward(x, c, mask=mask)
+        self.log('train/loss_score', loss, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, c = self.get_input(batch)
+        mask = torch.zeros_like(x[:, 0:1, :, :])
+        x = torch.concat((x, mask[:,:1]), dim=1)
+        loss = self.forward(x, c, mask=mask)
+        self.log('val/loss_score', loss, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        
+        return loss
+
+    def get_input(self, batch):
+        x, c = batch
+        return x, c
+
+    @torch.no_grad()
+    def sample(self, batch_size=8, c=None, mask=None, **kwargs):
+        rnd = StackedRandomGenerator(self.device, range(batch_size))
+        latents = rnd.randn([batch_size, self.unet.out_channels, self.unet.dim, self.unet.dim], device=self.device)
+        return self.sampler(self.unet, latents=latents, class_labels=c, randn_like=rnd.randn_like, mask=mask, **kwargs)
+
+    @torch.no_grad()
+    def log_images(self, batch, N=12, n_row=2, inpaint=False):
+        log = dict()
+
+        # log samples
+        x0, c = self.get_input(batch)
+        N = min(x0.shape[0], N)
+        x0 = x0.to(self.device)[:N]
+        c = c.to(self.device)[:N]
+        log["inputs"] = x0
+
+        # backward sampling (denoising)
+        start_time = time.time()
+        samples, intermediates = self.sample(batch_size=N, c=c)
+        end_time = time.time()
+        log["samples"] = samples
+        
+        p = samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+        k = samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+        residual, _, _, _, _, _, _ = self.residual.r_diff(p, k)
+
+        self.log("physics_residual_l2_norm", torch.mean(residual**2),
+                 prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log("sample time", end_time-start_time, logger=True, prog_bar=True,
+                 on_step=False, on_epoch=True)
+        p_mean = torch.mean(samples[:, 0, :, :], dim=(1,2)) 
+        # For mean permeability
+        #self.log("Permeability deviation", torch.nn.functional.mse_loss(p_mean, c),
+        #         prog_bar=True, logger=True, on_step=False, on_epoch=True)
+
+        if inpaint:
+            # inpainting
+            scatter_mask = create_scatter_mask(x0, channels=[0], ratio=0.2)
+            patch_mask = create_patch_mask(x0, channels=[0], ratio=0.9)
+            log['scatter known'] = x0*scatter_mask
+            log['patch known'] = x0*patch_mask
+            scatter_samples, _ = self.sample(batch_size=N, c=c, mask=scatter_mask, known_latents=x0)
+            patch_samples, _ = self.sample(batch_size=N, c=c, mask=patch_mask, known_latents=x0)
+            log['scatter inpaint'] = scatter_samples
+            log['patch inpaint'] = patch_samples
+            
+            p_scatter = scatter_samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+            k_scatter = scatter_samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+            residual_scatter, _, _, _, _, _, _ = self.residual.r_diff(p_scatter, k_scatter)
+            p_patch = patch_samples[:, 0, :, :]*self.residual.sigma_p + self.residual.mu_p
+            k_patch = patch_samples[:, 1, :, :]*self.residual.sigma_k + self.residual.mu_k
+            residual_patch, _, _, _, _, _, _ = self.residual.r_diff(p_patch, k_patch)
+            self.log("physics_residual_l2_norm_scatter_inpaint", torch.mean(residual_scatter**2),
+                        prog_bar=True, logger=True, on_step=False, on_epoch=True)
+            self.log("physics_residual_l2_norm_patch_inpaint", torch.mean(residual_patch**2),
+                        prog_bar=True, logger=True, on_step=False, on_epoch=True)
+
+        return log
+
+    def _get_rows_from_list(self, samples):
+        n_per_row = len(samples)
+        grid = rearrange(samples, 'n b c h w -> b n c h w')
+        grid = rearrange(grid, 'b n c h w -> (b n) c h w')
+        grid = make_grid(grid, nrow=n_per_row)
+        return grid
+
+    def configure_optimizers(self):
+        # Create the AdamW optimizer
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
+        #return optimizer
+        #'''
+        # Create the LinearWarmupCosineAnnealingLR scheduler
+        scheduler = LinearWarmupCosineAnnealingLR(optimizer, 
+                                                  warmup_epochs=100,
+                                                  max_epochs=1000,
+                                                  warmup_start_lr=1e-7,
+                                                  eta_min=1e-7)
+
+        # Return the optimizer and the scheduler
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
+        }
+        #'''
 
 '''
 class Diffusion2D_NS(pl.LightningModule):

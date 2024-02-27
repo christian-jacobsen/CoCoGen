@@ -30,34 +30,50 @@ class Darcy_Dataset(Dataset):
 
         # load the sample names and partition
         sample_names = os.listdir(osp.join(path, "data"))
-        np.random.shuffle(sample_names)  # Shuffle the dataset
-        num_samples = len(sample_names)
-        num_train = int(split_ratios[0] * num_samples)
-        num_val = int(split_ratios[1] * num_samples)
-        
-        if subset == 'train':
-            sample_names = sample_names[:num_train]
-        elif subset == 'val':
-            sample_names = sample_names[num_train:num_train + num_val]
-        elif subset == 'test':
-            sample_names = sample_names[num_train + num_val:]
-        
         self.P_names, self.U1_names, self.U2_names = self.seperate_img_names(sample_names)
         self.P_names.sort()
         self.U1_names.sort()
         self.U2_names.sort() # all files are stored as P_xxx.npy, U1_xxx.npy, U2_xxx.npy
-        self.img_mean = np.array([0, 0.194094975, 0.115737872]) # P, U1, U2
-        self.img_std = np.array([0.08232874, 0.27291843, 0.12989907])
-
         # load permeability fields
         self.perm_names = os.listdir(osp.join(path, "permeability"))
         self.perm_names.sort()
-        self.perm_mean = 1.14906847
-        self.perm_std = 7.81547992
-
         # load the parameter values
         self.param_names = os.listdir(osp.join(path, "params"))
         self.param_names.sort()
+
+        num_samples = len(self.P_names)
+        num_train = int(split_ratios[0] * num_samples)
+        num_val = int(split_ratios[1] * num_samples)
+        indices = np.random.permutation(num_samples)
+        self.P_names = np.asarray(self.P_names)
+        self.U1_names = np.asarray(self.U1_names)
+        self.U2_names = np.asarray(self.U2_names)
+        self.perm_names = np.asarray(self.perm_names)
+        self.param_names = np.asarray(self.param_names)
+        
+        if subset == 'train':
+            self.P_names = self.P_names[indices[:num_train]]
+            self.U1_names = self.U1_names[indices[:num_train]]
+            self.U2_names = self.U2_names[indices[:num_train]]
+            self.perm_names = self.perm_names[indices[:num_train]]
+            self.param_names = self.param_names[indices[:num_train]]
+        elif subset == 'val':
+            self.P_names = self.P_names[indices[num_train:num_train + num_val]]
+            self.U1_names = self.U1_names[indices[num_train:num_train + num_val]]
+            self.U2_names = self.U2_names[indices[num_train:num_train + num_val]]
+            self.perm_names = self.perm_names[indices[num_train:num_train + num_val]]
+            self.param_names = self.param_names[indices[num_train:num_train + num_val]]
+        elif subset == 'test':
+            self.P_names = self.P_names[indices[num_train + num_val:]]
+            self.U1_names = self.U1_names[indices[num_train + num_val:]]
+            self.U2_names = self.U2_names[indices[num_train + num_val:]]
+            self.perm_names = self.perm_names[indices[num_train + num_val:]]
+            self.param_names = self.param_names[indices[num_train + num_val:]]
+
+        self.img_mean = np.array([0, 0.194094975, 0.115737872]) # P, U1, U2
+        self.img_std = np.array([0.08232874, 0.27291843, 0.12989907])
+        self.perm_mean = 1.14906847
+        self.perm_std = 7.81547992
         self.param_mean = 1.248473
         self.param_std = 0.7208982
 
@@ -134,34 +150,50 @@ class Mod_Darcy_Dataset(Dataset):
 
         # load the sample names and partition
         sample_names = os.listdir(osp.join(path, "data"))
-        np.random.shuffle(sample_names)  # Shuffle the dataset
-        num_samples = len(sample_names)
-        num_train = int(split_ratios[0] * num_samples)
-        num_val = int(split_ratios[1] * num_samples)
-        
-        if subset == 'train':
-            sample_names = sample_names[:num_train]
-        elif subset == 'val':
-            sample_names = sample_names[num_train:num_train + num_val]
-        elif subset == 'test':
-            sample_names = sample_names[num_train + num_val:]
-        
         self.P_names, self.U1_names, self.U2_names = self.seperate_img_names(sample_names)
         self.P_names.sort()
         self.U1_names.sort()
         self.U2_names.sort() # all files are stored as P_xxx.npy, U1_xxx.npy, U2_xxx.npy
-        self.img_mean = np.array([0, 0.194094975, 0.115737872]) # P, U1, U2
-        self.img_std = np.array([0.08232874, 0.27291843, 0.12989907])
-
         # load permeability fields
         self.perm_names = os.listdir(osp.join(path, "permeability"))
         self.perm_names.sort()
-        self.perm_mean = 1.14906847
-        self.perm_std = 7.81547992
-
         # load the parameter values
         self.param_names = os.listdir(osp.join(path, "params"))
         self.param_names.sort()
+
+        num_samples = len(self.P_names)
+        num_train = int(split_ratios[0] * num_samples)
+        num_val = int(split_ratios[1] * num_samples)
+        indices = np.random.permutation(num_samples)
+        self.P_names = np.asarray(self.P_names)
+        self.U1_names = np.asarray(self.U1_names)
+        self.U2_names = np.asarray(self.U2_names)
+        self.perm_names = np.asarray(self.perm_names)
+        self.param_names = np.asarray(self.param_names)
+        
+        if subset == 'train':
+            self.P_names = self.P_names[indices[:num_train]]
+            self.U1_names = self.U1_names[indices[:num_train]]
+            self.U2_names = self.U2_names[indices[:num_train]]
+            self.perm_names = self.perm_names[indices[:num_train]]
+            self.param_names = self.param_names[indices[:num_train]]
+        elif subset == 'val':
+            self.P_names = self.P_names[indices[num_train:num_train + num_val]]
+            self.U1_names = self.U1_names[indices[num_train:num_train + num_val]]
+            self.U2_names = self.U2_names[indices[num_train:num_train + num_val]]
+            self.perm_names = self.perm_names[indices[num_train:num_train + num_val]]
+            self.param_names = self.param_names[indices[num_train:num_train + num_val]]
+        elif subset == 'test':
+            self.P_names = self.P_names[indices[num_train + num_val:]]
+            self.U1_names = self.U1_names[indices[num_train + num_val:]]
+            self.U2_names = self.U2_names[indices[num_train + num_val:]]
+            self.perm_names = self.perm_names[indices[num_train + num_val:]]
+            self.param_names = self.param_names[indices[num_train + num_val:]]
+
+        self.img_mean = np.array([0, 0.194094975, 0.115737872]) # P, U1, U2
+        self.img_std = np.array([0.08232874, 0.27291843, 0.12989907])
+        self.perm_mean = 1.14906847
+        self.perm_std = 7.81547992
         self.param_mean = 1.248473
         self.param_std = 0.7208982
 
@@ -206,10 +238,10 @@ class ModDarcyLoader(pl.LightningDataModule):
 
     def setup(self, stage: str = None):
         if stage == 'fit' or stage is None:
-            self.train_dataset = Darcy_Dataset(self.data_dir, subset='train', split_ratios=self.split_ratios)
-            self.val_dataset = Darcy_Dataset(self.data_dir, subset='val', split_ratios=self.split_ratios)
+            self.train_dataset = Mod_Darcy_Dataset(self.data_dir, subset='train', split_ratios=self.split_ratios)
+            self.val_dataset = Mod_Darcy_Dataset(self.data_dir, subset='val', split_ratios=self.split_ratios)
         if stage == 'test' or stage is None:
-            self.test_dataset = Darcy_Dataset(self.data_dir, subset='test', split_ratios=self.split_ratios)
+            self.test_dataset = Mod_Darcy_Dataset(self.data_dir, subset='test', split_ratios=self.split_ratios)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=True)

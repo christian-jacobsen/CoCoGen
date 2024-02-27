@@ -215,8 +215,12 @@ def edm_sampler(
     net, latents, class_labels=None, 
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=0,
-    pfgmpp=False,
+    pfgmpp=False, mask=None, known_latents=None
 ):
+    '''
+    mask: torch.Tensor, shape (H, W) or (B, C, H, W), 1 for known values, 0 for unknown
+    known_latents: torch.Tensor, shape (H, W) or (B, C, H, W), known values
+    '''
     net.eval()
     # Time step discretization.
     # orig implementation float64, change to float32
@@ -230,28 +234,39 @@ def edm_sampler(
     else:
         x_next = latents.to(torch.float32) * t_steps[0]
 
+    if mask is not None:
+        # mask out the known values
+        assert(mask.shape[-2:] == x_next.shape[-2:]) # match (H, W)
+        assert(known_latents[-2:] == x_next.shape[-2:])
+        if len(mask.shape) == 2:
+            mask = mask[None, None, ...].expand_as(x_next)
+        if len(known_latents.shape) == 2:
+            known_latents = known_latents[None, None, ...].expand_as(x_next)
+    else:
+        mask = torch.zeros_like(x_next)
+    x_next = x_next * (1 - mask) + known_latents * mask
     #whole_trajectory = torch.zeros((num_steps, *x_next.shape), dtype=torch.float32)
     # Main sampling loop.
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):  # 0, ..., N-1
 
-        x_cur = x_next
+        x_cur = x_next 
         # Increase noise temporarily.
         gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
         t_hat = torch.as_tensor(t_cur + gamma * t_cur)
-        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur)
+        x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * torch.randn_like(x_cur) * (1 - mask)
         # Euler step.
         denoised = net(x_hat, t_hat.repeat(x_hat.shape[0]), class_labels).to(torch.float32)
         #print('denoised', denoised.shape)
         d_cur = (x_hat - denoised) / t_hat
         #print('x_hat', x_hat.shape)
         #print('d_cur', d_cur.shape)
-        x_next = x_hat + (t_next - t_hat) * d_cur
+        x_next = x_hat + (t_next - t_hat) * d_cur * (1 - mask)
 
         # Apply 2nd order correction.
         if i < num_steps - 1:
             denoised = net(x_next, t_next, class_labels).to(torch.float32)
             d_prime = (x_next - denoised) / t_next
-            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime) * (1 - mask)
         #whole_trajectory[i] = x_next
 
     return x_next#, whole_trajectory

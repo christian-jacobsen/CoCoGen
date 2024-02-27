@@ -39,6 +39,33 @@ def convert_to_rgb(images):
 
     return converted_images
 
+def create_scatter_mask(tensor, channels=None, ratio=0.1):
+    B, C, H, W = tensor.shape
+    if channels is None:
+        channels = range(C) # Assume apply to all channels
+    num_elements_to_mask = int(H * W * ratio)
+    mask = torch.zeros_like(tensor)
+    for b in range(B):
+        for c in channels:
+            flat_tensor = tensor[b, c].view(-1)
+            indices_to_mask = torch.randperm(flat_tensor.shape[0])[:num_elements_to_mask]
+            mask[b, c].view(-1)[indices_to_mask] = 1
+    return mask
+
+def create_patch_mask(tensor, channels=None, ratio=0.1):
+    B, C, H, W = tensor.shape
+    if channels is None:
+        channels = range(C) # Assume apply to all channels
+    patch_size = int(min(H, W) * ratio)
+    start = (H - patch_size) // 2
+    end = start + patch_size
+    mask = torch.zeros_like(tensor)
+    for b in range(B):
+        for c in channels:
+            mask[b, c, :, :] = 1
+            mask[b, c, start:end, start:end] = 0
+    return mask
+
 def plot_inpainting(data, samples, sensors, path):
     batch_size = data.shape[0]
 

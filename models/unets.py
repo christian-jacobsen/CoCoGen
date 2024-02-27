@@ -325,7 +325,8 @@ class PFGMPPUNet(torch.nn.Module):
 
         # disabled due to mixed precision training
         #assert F_x.dtype == dtype
-        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        #print('F_x shape: ', F_x.shape, 'x shape: ', x.shape)
+        D_x = c_skip * x[:,:self.out_channels] + c_out * F_x.to(torch.float32)
         return D_x
 
     def round_sigma(self, sigma):

@@ -96,7 +96,8 @@ def main():
             "target": "loggers.ImageLogger",
             "params": {
                 "max_images": 12,
-                "clamp": False
+                "clamp": False,
+                "log_images_kwargs": {"inpaint": True}
             }
         },
         "cuda_callback": {

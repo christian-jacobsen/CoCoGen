@@ -26,7 +26,7 @@ class EDMLoss:
         #self.opts = opts
         print(f"In EDM loss: D:{self.D}, N:{self.N}")
 
-    def __call__(self, net, images, labels=None, augment_pipe=None, stf=False, pfgmpp=False, ref_images=None):
+    def __call__(self, net, images, labels=None, augment_pipe=None, stf=False, pfgmpp=False, ref_images=None, mask=None):
 
         if pfgmpp:
             # ln(sigma) ~ N(P_mean, P_std^2), Appendix C
@@ -69,7 +69,14 @@ class EDMLoss:
             #    sigma *= 380. / 80.
             weight = (sigma ** 2 + self.sigma_data ** 2) / (sigma * self.sigma_data) ** 2
             y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
-            n = torch.randn_like(y) * sigma
+            #n = torch.randn_like(y) * sigma
+            n = torch.zeros_like(y)
+            if mask is not None:
+                n[:,:net.out_channels] = torch.randn_like(y[:,:net.out_channels]) * sigma
+                n[:,:net.out_channels] = n[:,:net.out_channels] * (1 - mask) 
+            else:
+                n = torch.randn_like(y) * sigma
+            #print("y shape:", y.shape, "n shape:", n.shape)
             D_yn = net(y + n, sigma, labels)
 
         if stf:
@@ -89,8 +96,10 @@ class EDMLoss:
             target = target.view_as(y)
         else:
             target = y
-
-        loss = weight * ((D_yn - target) ** 2)
+        if mask is None:
+            loss = weight * ((D_yn - target) ** 2)
+        else:
+            loss = weight * ((D_yn - target[:,:net.out_channels]) ** 2)
         return loss
 
     def stf_scores(self, sigmas, perturbed_samples, samples_full):
@@ -194,9 +203,13 @@ def edm_sampler(
     net, latents, class_labels=None, randn_like=torch.randn_like,
     num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
     S_churn=0, S_min=0, S_max=float('inf'), S_noise=0,
-    pfgmpp=False, deterministic=False,
+    pfgmpp=False, deterministic=False, mask=None, known_latents=None,
+    mask_channel=False
 ):
-
+    '''
+    mask: torch.Tensor, shape (H, W) or (B, C, H, W), 1 for known values, 0 for unknown
+    known_latents: torch.Tensor, shape (H, W) or (B, C, H, W), known values
+    '''
     N = net.N
     # Adjust noise levels based on what's supported by the network.
     sigma_min = max(sigma_min, net.sigma_min)
@@ -213,6 +226,19 @@ def edm_sampler(
     else:
         x_next = latents.to(torch.float64) * t_steps[0]
 
+    if mask is not None:
+        # mask out the known values
+        assert(mask.shape[-2:] == x_next.shape[-2:]) # match (H, W)
+        assert(known_latents[-2:] == x_next.shape[-2:], "Shape: ", known_latents.shape, x_next.shape)
+        if len(mask.shape) == 2:
+            mask = mask[None, None, ...].expand_as(x_next)
+        #if len(known_latents.shape) == 2:
+        #    known_latents = known_latents[None, None, ...].expand_as(x_next)
+    else:
+        mask = torch.zeros_like(x_next)
+    if known_latents is not None:
+        x_next = x_next * (1 - mask) + known_latents * mask
+
     whole_trajectory = torch.zeros((num_steps, *x_next.shape), dtype=torch.float64)
     # Main sampling loop.
     for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):  # 0, ..., N-1
@@ -221,21 +247,27 @@ def edm_sampler(
             # Increase noise temporarily.
             gamma = min(S_churn / num_steps, np.sqrt(2) - 1) if S_min <= t_cur <= S_max else 0
             t_hat = net.round_sigma(t_cur + gamma * t_cur)
-            x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur)
+            x_hat = x_cur + (t_hat ** 2 - t_cur ** 2).sqrt() * S_noise * randn_like(x_cur) * (1 - mask)
         else:
             t_hat = t_cur
             x_hat = x_cur
 
         # Euler step.
-        denoised = net(x_hat, repeat(t_hat.reshape(-1), 'w -> h w', h=x_hat.shape[0]), class_labels).to(torch.float64)
+        if not mask_channel:
+            denoised = net(x_hat, repeat(t_hat.reshape(-1), 'w -> h w', h=x_hat.shape[0]), class_labels).to(torch.float64)
+        else:
+            denoised = net(torch.cat((x_hat, mask[:, :1]), dim=1), repeat(t_hat.reshape(-1), 'w -> h w', h=x_hat.shape[0]), class_labels).to(torch.float64)
         d_cur = (x_hat - denoised) / t_hat
-        x_next = x_hat + (t_next - t_hat) * d_cur
+        x_next = x_hat + (t_next - t_hat) * d_cur * (1 - mask)
 
         # Apply 2nd order correction.
         if i < num_steps - 1:
-            denoised = net(x_next, repeat(t_next.reshape(-1), 'w -> h w', h=x_next.shape[0]), class_labels).to(torch.float64)
+            if not mask_channel:
+                denoised = net(x_next, repeat(t_next.reshape(-1), 'w -> h w', h=x_next.shape[0]), class_labels).to(torch.float64)
+            else:
+                denoised = net(torch.cat((x_next, mask[:, :1]), dim=1), repeat(t_next.reshape(-1), 'w -> h w', h=x_next.shape[0]), class_labels).to(torch.float64)
             d_prime = (x_next - denoised) / t_next
-            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
+            x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime) * (1 - mask)
 
         whole_trajectory[i] = x_next
 
@@ -243,7 +275,8 @@ def edm_sampler(
 
 class EDM_Sampler:
     def __init__(self, num_steps=18, sigma_min=0.002, sigma_max=80, rho=7,
-                 S_churn=0, S_min=0, S_max=float('inf'), S_noise=0, pfgmpp=False):
+                 S_churn=0, S_min=0, S_max=float('inf'), S_noise=0, pfgmpp=False,
+                 mask_channel=False):
         self.num_steps = num_steps
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
@@ -253,13 +286,15 @@ class EDM_Sampler:
         self.S_max = S_max
         self.S_noise = S_noise
         self.pfgmpp = pfgmpp
+        self.mask_channel = mask_channel
 
-    def __call__(self, net, latents, class_labels=None, randn_like=torch.randn_like):
+    def __call__(self, net, latents, class_labels=None, randn_like=torch.randn_like, mask=None, known_latents=None):
         return edm_sampler(
             net, latents, class_labels, randn_like,
             num_steps=self.num_steps, sigma_min=self.sigma_min, 
             sigma_max=self.sigma_max, rho=self.rho, S_churn=self.S_churn,
-            S_min=self.S_min, S_max=self.S_max, S_noise=self.S_noise, pfgmpp=self.pfgmpp
+            S_min=self.S_min, S_max=self.S_max, S_noise=self.S_noise, pfgmpp=self.pfgmpp,
+            mask=mask, known_latents=known_latents, mask_channel=self.mask_channel
         )
 
 class StackedRandomGenerator:
